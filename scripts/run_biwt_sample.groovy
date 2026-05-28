@@ -21,9 +21,9 @@ import io.github.drbergmanlab.biwt.core.domain.DomainDetectionOptions
 import java.nio.file.Path
 
 // ------------------------------- knobs --------------------------------------
-double stepSizeMicrons = 20.0       // ABM voxel size in µm
-int    channelIndex    = 0          // which channel becomes the "intensity" substrate
-String outputName      = "biwt-test-output.csv"
+double stepSizeMicrons = 20.0          // ABM voxel size in µm
+int    channelIndex    = 0             // which channel becomes the "intensity" substrate
+String outputPath      = "~/biwt-test-output.csv"  // absolute or ~-prefixed; created/overwritten
 // ----------------------------------------------------------------------------
 
 def imageData = getCurrentImageData()
@@ -45,8 +45,11 @@ def request = new SamplingRequest(
 
 def result = BiwtSampler.create().run(request)
 
-def outPath = Path.of(System.getProperty("user.home"), outputName)
-result.writeCsv(outPath)
+def expanded = outputPath.startsWith("~/")
+        ? Path.of(System.getProperty("user.home"), outputPath.substring(2))
+        : Path.of(outputPath)
+expanded.parent?.toFile()?.mkdirs()
+result.writeCsv(expanded)
 
 println "BIWT sample complete."
 println "  Source:      ${result.domain().sourceDescription()}"
@@ -55,4 +58,4 @@ println "  Step (req):  ${result.requestedStepMicrons()} µm"
 println "  Step (eff):  ${result.effectiveStepMicrons()} µm"
 println "  Pixel size:  ${result.domain().pixelWidthMicrons()} µm"
 println "  Substrates:  ${result.substrates().collect { it.name() }}"
-println "  Output:      ${outPath}"
+println "  Output:      ${expanded}"
