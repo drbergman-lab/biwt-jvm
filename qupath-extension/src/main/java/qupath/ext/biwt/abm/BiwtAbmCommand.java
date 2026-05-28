@@ -26,7 +26,6 @@ import javafx.scene.control.Label;
 import javafx.scene.control.ListView;
 import javafx.scene.control.ProgressBar;
 import javafx.scene.control.TextField;
-import javafx.scene.control.Tooltip;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
@@ -48,9 +47,14 @@ import qupath.lib.gui.QuPathGUI;
 
 import java.awt.image.BufferedImage;
 import java.io.File;
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * The interactive wizard launched from <b>Extensions → BIWT → Sample substrates…</b>.
@@ -271,21 +275,51 @@ public final class BiwtAbmCommand {
             @Override
             protected SamplingResult call() throws Exception {
                 int total = substrates.size();
-                List<NamedSubstrate> sampled = new ArrayList<>(total);
-                for (int i = 0; i < total; i++) {
-                    SubstrateSpec spec = substrates.get(i);
-                    updateMessage("Sampling '" + spec.name() + "' (" + (i + 1) + " of " + total + ")…");
-                    updateProgress(i, total);
-                    sampled.add(sampler.sampleOne(server, plan, spec));
+                int workerCount = Math.min(total, Runtime.getRuntime().availableProcessors());
+                updateMessage("Sampling " + total + " substrate(s) in parallel (" + workerCount + " workers)…");
+                updateProgress(0, total);
+
+                ExecutorService pool = Executors.newFixedThreadPool(workerCount, r -> {
+                    Thread t = new Thread(r, "biwt-sample-worker");
+                    t.setDaemon(true);
+                    return t;
+                });
+                AtomicInteger completed = new AtomicInteger(0);
+                try {
+                    List<Future<NamedSubstrate>> futures = new ArrayList<>(total);
+                    for (SubstrateSpec spec : substrates) {
+                        futures.add(pool.submit(() -> {
+                            NamedSubstrate ns = sampler.sampleOne(server, plan, spec);
+                            int done = completed.incrementAndGet();
+                            updateProgress(done, total);
+                            updateMessage("Completed " + done + " of " + total + " substrate(s)…");
+                            return ns;
+                        }));
+                    }
+
+                    // Preserve user-supplied order — substrates may finish in arbitrary order
+                    // but the CSV columns should match the order the user added them.
+                    List<NamedSubstrate> sampled = new ArrayList<>(total);
+                    for (Future<NamedSubstrate> f : futures) {
+                        try {
+                            sampled.add(f.get());
+                        } catch (java.util.concurrent.ExecutionException ee) {
+                            Throwable cause = ee.getCause();
+                            if (cause instanceof IOException ioe) throw ioe;
+                            if (cause instanceof RuntimeException re) throw re;
+                            throw new IOException(cause);
+                        }
+                    }
+
+                    updateMessage("Writing CSV…");
+                    new SubstrateCsvWriter().write(outPath, plan.grid(), sampled);
+                    return new SamplingResult(
+                            plan.domain(), plan.grid(),
+                            plan.requestedStepMicrons(), plan.effectiveStepMicrons(),
+                            sampled);
+                } finally {
+                    pool.shutdown();
                 }
-                updateMessage("Writing CSV…");
-                updateProgress(total, total);
-                SamplingResult result = new SamplingResult(
-                        plan.domain(), plan.grid(),
-                        plan.requestedStepMicrons(), plan.effectiveStepMicrons(),
-                        sampled);
-                new SubstrateCsvWriter().write(outPath, plan.grid(), sampled);
-                return result;
             }
         };
         progressBar.progressProperty().bind(task.progressProperty());
@@ -366,7 +400,8 @@ public final class BiwtAbmCommand {
             Button cancelButton = new Button("Cancel");
 
             // PhysiCell requires unique substrate names — disable Add when the typed name
-            // already appears in the list.
+            // already appears in the list. (Tooltips on disabled buttons don't fire in JavaFX,
+            // so an always-visible inline warning is the discoverable signal.)
             javafx.beans.binding.BooleanBinding nameAlreadyUsed = Bindings.createBooleanBinding(
                     () -> {
                         String n = nameField.getText().trim();
@@ -375,25 +410,35 @@ public final class BiwtAbmCommand {
                     },
                     nameField.textProperty(), listItems);
 
+            Label nameWarning = new Label("already in use");
+            nameWarning.setStyle("-fx-text-fill: #cc0000;");
+            nameWarning.visibleProperty().bind(nameAlreadyUsed);
+            nameWarning.managedProperty().bind(nameAlreadyUsed);
+
             addButton.disableProperty().bind(
                     nameField.textProperty().isEmpty()
                             .or(channelBox.getSelectionModel().selectedItemProperty().isNull())
                             .or(nameAlreadyUsed));
-            addButton.tooltipProperty().bind(Bindings.when(nameAlreadyUsed)
-                    .then(new Tooltip("That substrate name is already in use."))
-                    .otherwise((Tooltip) null));
-
             finishButton.disableProperty().bind(Bindings.isEmpty(listItems));
 
+            // Enter in the name field commits the substrate, if Add is enabled.
+            nameField.setOnAction(e -> {
+                if (!addButton.isDisable()) addButton.fire();
+            });
+
             // Layout
+            HBox nameRow = new HBox(8, nameField, nameWarning);
+            HBox.setHgrow(nameField, Priority.ALWAYS);
+            nameRow.setAlignment(Pos.CENTER_LEFT);
+
             GridPane form = new GridPane();
             form.setHgap(8);
             form.setVgap(8);
             form.add(new Label("Name:"), 0, 0);
-            form.add(nameField, 1, 0);
+            form.add(nameRow, 1, 0);
             form.add(new Label("Channel:"), 0, 1);
             form.add(channelBox, 1, 1);
-            GridPane.setHgrow(nameField, Priority.ALWAYS);
+            GridPane.setHgrow(nameRow, Priority.ALWAYS);
             GridPane.setHgrow(channelBox, Priority.ALWAYS);
 
             HBox buttons = new HBox(10, addButton, finishButton, cancelButton);
