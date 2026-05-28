@@ -1,0 +1,41 @@
+# Gradle
+.gradle/
+build/
+gradle-app.setting
+
+# Java
+*.class
+*.jar
+*.war
+*.ear
+hs_err_pid*
+
+# Keep the Gradle wrapper jar (re-include after *.jar above)
+!gradle/wrapper/gradle-wrapper.jar
+
+# IDE — IntelliJ
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# IDE — VS Code / Eclipse
+.vscode/
+.classpath
+.project
+.settings/
+bin/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local test data — keep the directory but never commit its contents (images, QuPath projects, generated CSVs).
+test_data/*
+!test_data/.gitkeep
+
+# Local design / brainstorming docs not meant for the repo
+my_qupath_plugin_context.html
+substrates.csv
+*.log
