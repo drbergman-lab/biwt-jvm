@@ -99,16 +99,19 @@ public final class BiwtSampler {
     }
 
     /**
-     * Run the actual pixel-reading pass against a previously-computed plan.
-     * This is the only step that touches image pixels.
+     * Run the actual pixel-reading pass against a previously-computed plan and an arbitrary
+     * server. Pass the original {@code imageData.getServer()} for raw channels, or a
+     * {@link qupath.lib.images.servers.TransformedServerBuilder} output for derived channels
+     * such as color-deconvolution H/E/Residual.
+     *
+     * <p>Note this is the only method that touches image pixels.
      */
-    public SamplingResult sample(ImageData<BufferedImage> imageData,
+    public SamplingResult sample(ImageServer<BufferedImage> server,
                                  SamplingPlan plan,
                                  List<SubstrateSpec> substrates) throws IOException {
         if (substrates.isEmpty()) {
             throw new IllegalArgumentException("substrates must not be empty");
         }
-        ImageServer<BufferedImage> server = imageData.getServer();
 
         List<NamedSubstrate> namedSubstrates = new ArrayList<>(substrates.size());
         for (SubstrateSpec spec : substrates) {
@@ -123,10 +126,10 @@ public final class BiwtSampler {
                 namedSubstrates);
     }
 
-    /** One-shot convenience: {@code plan} + {@code sample}. */
+    /** One-shot convenience: {@code plan} + {@code sample} using the image's raw server channels. */
     public SamplingResult run(SamplingRequest request) throws IOException {
         SamplingPlan p = plan(request.imageData(), request.domainOptions(),
                 request.stepSizeMicrons(), request.origin());
-        return sample(request.imageData(), p, request.substrates());
+        return sample(request.imageData().getServer(), p, request.substrates());
     }
 }
