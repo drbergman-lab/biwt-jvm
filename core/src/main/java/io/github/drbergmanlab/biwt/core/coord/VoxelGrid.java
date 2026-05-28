@@ -2,8 +2,16 @@ package io.github.drbergmanlab.biwt.core.coord;
 
 /**
  * Regular 2D voxel grid covering an ABM domain. Coordinates follow PhysiCell's
- * {@code Cartesian_Mesh::resize} convention: the i-th voxel center along x is
+ * {@code Cartesian_Mesh::resize} convention along x: the i-th voxel center along x is
  * {@code xStartMicrons + (i + 0.5) * dxMicrons}.
+ *
+ * <p><b>Y axis convention.</b> PhysiCell math has +y pointing up, but image-pixel rows go
+ * top-to-bottom. So voxel {@code j = 0} (the image's top row) gets the <em>largest</em> y value
+ * and {@code j = ny - 1} gets the smallest. The {@link #yCenter} formula reflects this:
+ * <pre>yCenter(j) = yStartMicrons - (j + 0.5) * dyMicrons</pre>
+ * where {@code yStartMicrons} is the math-µm y of the image's top edge minus the annotation's
+ * top-pixel offset. The grid orientation still matches the image — top-left voxel is still
+ * (i = 0, j = 0), no transpose, no rotation — only the µm coordinate associated with each j flips.
  *
  * <p>For the MVP, the grid is sized so the smallest integer multiple of {@code stepSizeMicrons}
  * fully covers the annotation in each axis. The grid extent may therefore overhang the annotation
@@ -12,9 +20,10 @@ package io.github.drbergmanlab.biwt.core.coord;
  * <p>The origin is determined by {@link CoordinateOrigin}:
  * <ul>
  *   <li>{@link CoordinateOrigin#IMAGE_CENTER} (MVP default): the image center maps to (0, 0).
- *       {@code xStartMicrons = -(nx * dxMicrons) / 2}.
- *   <li>{@link CoordinateOrigin#IMAGE_TOP_LEFT} (deferred): the image top-left maps to (0, 0).
- *       {@code xStartMicrons = 0}.
+ *       The image spans {@code [-W/2, +W/2] × [-H/2, +H/2]} in µm.
+ *   <li>{@link CoordinateOrigin#IMAGE_TOP_LEFT} (deferred): the image top-left maps to (0, 0)
+ *       and the image extends into the fourth quadrant — x grows right, y grows up (so
+ *       image-bottom is at the most negative y).
  * </ul>
  */
 public record VoxelGrid(
@@ -42,7 +51,8 @@ public record VoxelGrid(
 
     public double yCenter(int j) {
         if (j < 0 || j >= ny) throw new IndexOutOfBoundsException("j=" + j + " out of [0, " + ny + ")");
-        return yStartMicrons + (j + 0.5) * dyMicrons;
+        // Image rows go top→bottom but math +y is up: subtract, not add.
+        return yStartMicrons - (j + 0.5) * dyMicrons;
     }
 
     /**
@@ -84,10 +94,10 @@ public record VoxelGrid(
         int nx = (int) Math.ceil(annotationWidthMicrons / stepSizeMicrons);
         int ny = (int) Math.ceil(annotationHeightMicrons / stepSizeMicrons);
 
-        // Grid spans [annotationXMin, annotationXMin + nx * stepSize) in image-µm space.
-        // Shift so the origin matches the requested convention.
-        double xShift;
-        double yShift;
+        // Math-µm coordinates of the image-pixel top-left, per origin convention.
+        // x grows right (same as image-pixel x); y grows up (opposite of image-pixel y).
+        double xShift;  // math-µm x of image-pixel-x = 0
+        double yShift;  // math-µm y of image-pixel-y = 0
         switch (origin) {
             case IMAGE_TOP_LEFT -> {
                 xShift = 0;
@@ -95,13 +105,16 @@ public record VoxelGrid(
             }
             case IMAGE_CENTER -> {
                 xShift = -imageWidthMicrons / 2.0;
-                yShift = -imageHeightMicrons / 2.0;
+                yShift = imageHeightMicrons / 2.0;
             }
             default -> throw new IllegalArgumentException("Unknown origin: " + origin);
         }
 
-        double xStart = annotationXMinMicrons + xShift;
-        double yStart = annotationYMinMicrons + yShift;
+        // xStart is the µm x of image-pixel-x = annotationXMinMicrons (grows right).
+        double xStart = xShift + annotationXMinMicrons;
+        // yStart is the µm y of image-pixel-y = annotationYMinMicrons (math y, grows up,
+        // so subtracting the image-pixel y offset).
+        double yStart = yShift - annotationYMinMicrons;
 
         return new VoxelGrid(nx, ny, stepSizeMicrons, stepSizeMicrons, xStart, yStart, origin);
     }

@@ -106,10 +106,10 @@ class BiwtSamplerTest {
 
         List<String> lines = Files.readAllLines(out);
         assertEquals("x,y,z,oxygen", lines.get(0));
-        // 2x2 grid: centers (5,5), (15,5), (5,15), (15,15)
+        // 2x2 grid with image-top-left origin (Q4): xCenter = 5, 15; yCenter(0) = -5, yCenter(1) = -15.
         assertEquals(5, lines.size());
-        assertTrue(lines.get(1).startsWith("5,5,0,7"));
-        assertTrue(lines.get(4).startsWith("15,15,0,7"));
+        assertTrue(lines.get(1).startsWith("5,-5,0,7"),    "got: " + lines.get(1));
+        assertTrue(lines.get(4).startsWith("15,-15,0,7"),  "got: " + lines.get(4));
     }
 
     @Test

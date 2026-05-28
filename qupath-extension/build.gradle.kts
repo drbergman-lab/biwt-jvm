@@ -14,10 +14,11 @@ qupathExtension {
 }
 
 dependencies {
-    // The core sampling/CSV logic
-    shadow(project(":core"))
+    // The core sampling/CSV logic — OUR code, must be bundled into the shadow jar.
+    // (Use `implementation`, not `shadow`: `shadow` means "QuPath provides this at runtime".)
+    implementation(project(":core"))
 
-    // QuPath APIs (GUI + non-GUI) and supporting libs
+    // QuPath APIs (GUI + non-GUI) and supporting libs — provided by the QuPath host, not bundled.
     shadow(libs.bundles.qupath)
     shadow(libs.bundles.logging)
     shadow(libs.qupath.fxtras)

@@ -44,17 +44,37 @@ class VoxelGridTest {
     @Test
     void imageCenterOriginShiftsToImageCenter() {
         // Image 100x100, annotation at (10,10) size 60x60, step 20 → grid covers 60x60.
-        // Image center = (50, 50). With IMAGE_CENTER, annotation top-left (10,10) maps to (-40, -40).
+        // Image center = (50, 50). With IMAGE_CENTER:
+        //   xStart = -W/2 + annotationXMin = -50 + 10 = -40 (math x of annotation left edge).
+        //   yStart = +H/2 - annotationYMin =  50 - 10 = +40 (math y of annotation top edge).
+        // First voxel center: (xStart + 10, yStart - 10) = (-30, +30).
         VoxelGrid grid = VoxelGrid.cover(
                 60.0, 60.0, 20.0,
                 100.0, 100.0,
                 10.0, 10.0,
                 CoordinateOrigin.IMAGE_CENTER);
         assertEquals(-40.0, grid.xStartMicrons(), EPS);
-        assertEquals(-40.0, grid.yStartMicrons(), EPS);
-        // First voxel center at (-40 + 10, -40 + 10) = (-30, -30)
+        assertEquals( 40.0, grid.yStartMicrons(), EPS);
         assertEquals(-30.0, grid.xCenter(0), EPS);
-        assertEquals(-30.0, grid.yCenter(0), EPS);
+        assertEquals( 30.0, grid.yCenter(0), EPS);
+    }
+
+    @Test
+    void yAxisIsFlippedRelativeToImageRows() {
+        // Image rows go top→bottom but math +y is up. So voxel j=0 (image top) has the
+        // LARGEST y, and voxel j=ny-1 (image bottom) has the smallest. Catches regressions
+        // of the y-flip bug surfaced by Plots.scatter showing an upside-down image.
+        VoxelGrid grid = VoxelGrid.cover(
+                100.0, 100.0, 20.0,
+                100.0, 100.0,
+                0.0, 0.0,
+                CoordinateOrigin.IMAGE_CENTER);
+        assertTrue(grid.yCenter(0) > grid.yCenter(grid.ny() - 1),
+                "image-top voxel should have larger math y than image-bottom voxel");
+        // Concrete: 100/2 - 0 = 50; centers at 50-10, 50-30, 50-50, 50-70, 50-90 = 40, 20, 0, -20, -40.
+        assertEquals(40.0, grid.yCenter(0), EPS);
+        assertEquals(0.0,  grid.yCenter(2), EPS);
+        assertEquals(-40.0, grid.yCenter(4), EPS);
     }
 
     @Test
