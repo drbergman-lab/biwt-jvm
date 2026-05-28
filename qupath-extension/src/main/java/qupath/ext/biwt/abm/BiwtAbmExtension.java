@@ -28,7 +28,7 @@ public class BiwtAbmExtension implements QuPathExtension {
 
         var menu = qupath.getMenu("Extensions>" + EXTENSION_NAME, true);
         MenuItem sampleItem = new MenuItem("Sample substrates…");
-        sampleItem.setOnAction(e -> logger.info("BIWT sample-substrates clicked (wizard not wired yet)"));
+        sampleItem.setOnAction(e -> new BiwtAbmCommand(qupath).run());
         menu.getItems().add(sampleItem);
     }
 

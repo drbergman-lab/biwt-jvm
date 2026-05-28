@@ -1,7 +1,9 @@
 package io.github.drbergmanlab.biwt.core;
 
+import io.github.drbergmanlab.biwt.core.coord.CoordinateOrigin;
 import io.github.drbergmanlab.biwt.core.coord.VoxelGrid;
 import io.github.drbergmanlab.biwt.core.domain.AbmDomain;
+import io.github.drbergmanlab.biwt.core.domain.DomainDetectionOptions;
 import io.github.drbergmanlab.biwt.core.domain.DomainDetector;
 import io.github.drbergmanlab.biwt.core.domain.DomainException;
 import io.github.drbergmanlab.biwt.core.export.NamedSubstrate;
@@ -17,24 +19,26 @@ import java.util.List;
 
 /**
  * Top-level entry point — wires {@link DomainDetector}, step-size reconciliation,
- * {@link VoxelGrid} construction, and {@link SubstrateSampler} together. Headless: a Groovy
- * script can do the entire export in ~10 lines:
+ * {@link VoxelGrid} construction, and {@link SubstrateSampler} together.
  *
- * <pre>{@code
- * def request = new SamplingRequest(
- *     imageData,
- *     DomainDetectionOptions.wholeImageFallback(),
- *     20.0,                              // µm
- *     CoordinateOrigin.IMAGE_CENTER,
- *     [new SubstrateSpec("oxygen", 0), new SubstrateSpec("ecm", 1)]
- * )
+ * <p>Two ways to use it:
+ * <ul>
+ *   <li>{@link #run(SamplingRequest)} — one-shot, headless. Best from Groovy:
+ *       <pre>{@code
+ * def request = new SamplingRequest(imageData, DomainDetectionOptions.wholeImageFallback(),
+ *     20.0, CoordinateOrigin.IMAGE_CENTER, [new SubstrateSpec("oxygen", 0)])
  * def result = BiwtSampler.create().run(request)
  * result.writeCsv(java.nio.file.Path.of("/tmp/substrates.csv"))
- * }</pre>
+ *       }</pre>
+ *   </li>
+ *   <li>{@link #plan} + {@link #sample(ImageData, SamplingPlan, List)} — two-phase, for the GUI:
+ *       the wizard calls {@code plan} to show "Grid will be N × M voxels, effective dx = X µm.
+ *       Proceed?" before committing to the expensive sampling pass.</li>
+ * </ul>
  *
  * <p>The MVP enforces square pixels (throws if {@code pixelWidthMicrons != pixelHeightMicrons}
- * within a tiny epsilon). Non-square pixels become reachable when the sampler supports
- * per-axis strides.
+ * within a tiny epsilon). Non-square pixels become reachable when {@link SubstrateSampler}
+ * supports per-axis strides.
  */
 public final class BiwtSampler {
 
@@ -52,25 +56,30 @@ public final class BiwtSampler {
         return new BiwtSampler(new DomainDetector(), new SubstrateSampler());
     }
 
-    public SamplingResult run(SamplingRequest request) throws IOException {
-        ImageData<BufferedImage> imageData = request.imageData();
+    /**
+     * Detect the domain, reconcile the µm step size with the pixel calibration, and build the
+     * voxel grid. Does not touch image pixels beyond reading metadata.
+     */
+    public SamplingPlan plan(ImageData<BufferedImage> imageData,
+                             DomainDetectionOptions domainOptions,
+                             double requestedStepMicrons,
+                             CoordinateOrigin origin) {
+        if (!(requestedStepMicrons > 0)) {
+            throw new IllegalArgumentException("requestedStepMicrons must be positive (got " + requestedStepMicrons + ")");
+        }
         ImageServer<BufferedImage> server = imageData.getServer();
 
-        // 1) Discover the domain (annotation or whole image).
-        AbmDomain domain = detector.detect(imageData, request.domainOptions());
+        AbmDomain domain = detector.detect(imageData, domainOptions);
 
-        // 2) Enforce square pixels for MVP.
         if (Math.abs(domain.pixelWidthMicrons() - domain.pixelHeightMicrons()) > SQUARE_PIXEL_TOLERANCE) {
             throw new DomainException("MVP requires square pixels; image has "
                     + domain.pixelWidthMicrons() + " x " + domain.pixelHeightMicrons() + " µm.");
         }
         double pxMicrons = domain.pixelWidthMicrons();
 
-        // 3) Reconcile the requested step size (µm) with the pixel grid.
-        int stridePx = Math.max(1, (int) Math.round(request.stepSizeMicrons() / pxMicrons));
+        int stridePx = Math.max(1, (int) Math.round(requestedStepMicrons / pxMicrons));
         double effectiveStepMicrons = stridePx * pxMicrons;
 
-        // 4) Build the voxel grid covering the annotation with the effective step size.
         double imageWidthMicrons = server.getWidth() * pxMicrons;
         double imageHeightMicrons = server.getHeight() * pxMicrons;
         VoxelGrid grid = VoxelGrid.cover(
@@ -81,17 +90,43 @@ public final class BiwtSampler {
                 imageHeightMicrons,
                 domain.xMinPx() * pxMicrons,
                 domain.yMinPx() * pxMicrons,
-                request.origin()
+                origin
         );
 
-        // 5) Sample each substrate.
         SamplingKernel kernel = SamplingKernel.nonOverlapping(stridePx);
-        List<NamedSubstrate> namedSubstrates = new ArrayList<>(request.substrates().size());
-        for (SubstrateSpec spec : request.substrates()) {
-            double[][] values = sampler.sample(server, domain, grid.nx(), grid.ny(), kernel, spec.channelIndex());
+
+        return new SamplingPlan(domain, grid, kernel, requestedStepMicrons, effectiveStepMicrons);
+    }
+
+    /**
+     * Run the actual pixel-reading pass against a previously-computed plan.
+     * This is the only step that touches image pixels.
+     */
+    public SamplingResult sample(ImageData<BufferedImage> imageData,
+                                 SamplingPlan plan,
+                                 List<SubstrateSpec> substrates) throws IOException {
+        if (substrates.isEmpty()) {
+            throw new IllegalArgumentException("substrates must not be empty");
+        }
+        ImageServer<BufferedImage> server = imageData.getServer();
+
+        List<NamedSubstrate> namedSubstrates = new ArrayList<>(substrates.size());
+        for (SubstrateSpec spec : substrates) {
+            double[][] values = sampler.sample(server, plan.domain(),
+                    plan.grid().nx(), plan.grid().ny(), plan.kernel(), spec.channelIndex());
             namedSubstrates.add(new NamedSubstrate(spec.name(), values));
         }
 
-        return new SamplingResult(domain, grid, request.stepSizeMicrons(), effectiveStepMicrons, namedSubstrates);
+        return new SamplingResult(
+                plan.domain(), plan.grid(),
+                plan.requestedStepMicrons(), plan.effectiveStepMicrons(),
+                namedSubstrates);
+    }
+
+    /** One-shot convenience: {@code plan} + {@code sample}. */
+    public SamplingResult run(SamplingRequest request) throws IOException {
+        SamplingPlan p = plan(request.imageData(), request.domainOptions(),
+                request.stepSizeMicrons(), request.origin());
+        return sample(request.imageData(), p, request.substrates());
     }
 }
