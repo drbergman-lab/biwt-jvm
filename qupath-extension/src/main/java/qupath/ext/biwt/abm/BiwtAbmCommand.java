@@ -331,6 +331,16 @@ public final class BiwtAbmCommand {
             ListView<String> list = new ListView<>(listItems);
             list.setPrefHeight(140);
 
+            Button removeButton = new Button("Remove selected");
+            removeButton.disableProperty().bind(
+                    list.getSelectionModel().selectedIndexProperty().lessThan(0));
+            removeButton.setOnAction(e -> {
+                int idx = list.getSelectionModel().getSelectedIndex();
+                if (idx < 0) return;
+                specs.remove(idx);
+                listItems.remove(idx);
+            });
+
             Button addButton = new Button("Add substrate");
             Button finishButton = new Button("Finish");
             Button cancelButton = new Button("Cancel");
@@ -354,9 +364,13 @@ public final class BiwtAbmCommand {
             HBox buttons = new HBox(10, addButton, finishButton, cancelButton);
             buttons.setAlignment(Pos.CENTER_RIGHT);
 
+            HBox listRow = new HBox(8, removeButton);
+            listRow.setAlignment(Pos.CENTER_LEFT);
+
             VBox root = new VBox(12,
                     new Label("Substrates added so far:"),
                     list,
+                    listRow,
                     new Label("Add a substrate:"),
                     form,
                     buttons);
