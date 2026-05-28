@@ -9,6 +9,8 @@ import io.github.drbergmanlab.biwt.core.domain.DomainException;
 import io.github.drbergmanlab.biwt.core.export.NamedSubstrate;
 import io.github.drbergmanlab.biwt.core.sampling.SamplingKernel;
 import io.github.drbergmanlab.biwt.core.sampling.SubstrateSampler;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import qupath.lib.images.ImageData;
 import qupath.lib.images.servers.ImageServer;
 
@@ -42,6 +44,7 @@ import java.util.List;
  */
 public final class BiwtSampler {
 
+    private static final Logger logger = LoggerFactory.getLogger(BiwtSampler.class);
     private static final double SQUARE_PIXEL_TOLERANCE = 1e-9;
 
     private final DomainDetector detector;
@@ -114,11 +117,18 @@ public final class BiwtSampler {
         }
 
         List<NamedSubstrate> namedSubstrates = new ArrayList<>(substrates.size());
+        long totalStart = System.nanoTime();
         for (SubstrateSpec spec : substrates) {
+            long t0 = System.nanoTime();
             double[][] values = sampler.sample(server, plan.domain(),
                     plan.grid().nx(), plan.grid().ny(), plan.kernel(), spec.channelIndex());
+            long elapsedMs = (System.nanoTime() - t0) / 1_000_000;
+            logger.info("Sampled '{}' (channel {}) in {} ms — grid {}×{}",
+                    spec.name(), spec.channelIndex(), elapsedMs, plan.grid().nx(), plan.grid().ny());
             namedSubstrates.add(new NamedSubstrate(spec.name(), values));
         }
+        long totalMs = (System.nanoTime() - totalStart) / 1_000_000;
+        logger.info("Sampled {} substrate(s) in {} ms total", substrates.size(), totalMs);
 
         return new SamplingResult(
                 plan.domain(), plan.grid(),
