@@ -4,6 +4,8 @@ import io.github.drbergmanlab.biwt.core.BiwtSampler;
 import io.github.drbergmanlab.biwt.core.SamplingPlan;
 import io.github.drbergmanlab.biwt.core.SamplingResult;
 import io.github.drbergmanlab.biwt.core.SubstrateSpec;
+import io.github.drbergmanlab.biwt.core.export.NamedSubstrate;
+import io.github.drbergmanlab.biwt.core.export.SubstrateCsvWriter;
 import io.github.drbergmanlab.biwt.core.coord.CoordinateOrigin;
 import io.github.drbergmanlab.biwt.core.domain.AnnotationNotFoundException;
 import io.github.drbergmanlab.biwt.core.domain.AskUserRequiredException;
@@ -22,8 +24,9 @@ import javafx.scene.control.Button;
 import javafx.scene.control.ChoiceBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.ListView;
-import javafx.scene.control.ProgressIndicator;
+import javafx.scene.control.ProgressBar;
 import javafx.scene.control.TextField;
+import javafx.scene.control.Tooltip;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
@@ -247,29 +250,46 @@ public final class BiwtAbmCommand {
                                  SamplingPlan plan,
                                  List<SubstrateSpec> substrates,
                                  Path outPath) {
-        ProgressIndicator indicator = new ProgressIndicator(-1);
-        indicator.setPrefSize(80, 80);
-        Label label = new Label(
+        Label headerLabel = new Label(
                 "Sampling " + plan.grid().nx() + " × " + plan.grid().ny()
                         + " voxels for " + substrates.size() + " substrate(s)…");
-        VBox box = new VBox(12, label, indicator);
+        Label statusLabel = new Label("Preparing…");
+        ProgressBar progressBar = new ProgressBar(0);
+        progressBar.setPrefWidth(360);
+        VBox box = new VBox(12, headerLabel, statusLabel, progressBar);
         box.setPadding(new Insets(20));
-        box.setAlignment(Pos.CENTER);
+        box.setAlignment(Pos.CENTER_LEFT);
         Stage progressStage = new Stage();
         progressStage.setTitle(TITLE);
         progressStage.initOwner(qupath.getStage());
-        progressStage.initModality(Modality.WINDOW_MODAL);
+        // Non-modal: user can pan/zoom the image while sampling runs. (Don't switch images.)
+        progressStage.initModality(Modality.NONE);
         progressStage.setScene(new Scene(box));
         progressStage.setResizable(false);
 
         Task<SamplingResult> task = new Task<>() {
             @Override
             protected SamplingResult call() throws Exception {
-                SamplingResult result = sampler.sample(server, plan, substrates);
-                result.writeCsv(outPath);
+                int total = substrates.size();
+                List<NamedSubstrate> sampled = new ArrayList<>(total);
+                for (int i = 0; i < total; i++) {
+                    SubstrateSpec spec = substrates.get(i);
+                    updateMessage("Sampling '" + spec.name() + "' (" + (i + 1) + " of " + total + ")…");
+                    updateProgress(i, total);
+                    sampled.add(sampler.sampleOne(server, plan, spec));
+                }
+                updateMessage("Writing CSV…");
+                updateProgress(total, total);
+                SamplingResult result = new SamplingResult(
+                        plan.domain(), plan.grid(),
+                        plan.requestedStepMicrons(), plan.effectiveStepMicrons(),
+                        sampled);
+                new SubstrateCsvWriter().write(outPath, plan.grid(), sampled);
                 return result;
             }
         };
+        progressBar.progressProperty().bind(task.progressProperty());
+        statusLabel.textProperty().bind(task.messageProperty());
         task.setOnSucceeded(e -> {
             progressStage.close();
             SamplingResult r = task.getValue();
@@ -345,9 +365,24 @@ public final class BiwtAbmCommand {
             Button finishButton = new Button("Finish");
             Button cancelButton = new Button("Cancel");
 
+            // PhysiCell requires unique substrate names — disable Add when the typed name
+            // already appears in the list.
+            javafx.beans.binding.BooleanBinding nameAlreadyUsed = Bindings.createBooleanBinding(
+                    () -> {
+                        String n = nameField.getText().trim();
+                        if (n.isEmpty()) return false;
+                        return specs.stream().anyMatch(s -> s.name().equals(n));
+                    },
+                    nameField.textProperty(), listItems);
+
             addButton.disableProperty().bind(
                     nameField.textProperty().isEmpty()
-                            .or(channelBox.getSelectionModel().selectedItemProperty().isNull()));
+                            .or(channelBox.getSelectionModel().selectedItemProperty().isNull())
+                            .or(nameAlreadyUsed));
+            addButton.tooltipProperty().bind(Bindings.when(nameAlreadyUsed)
+                    .then(new Tooltip("That substrate name is already in use."))
+                    .otherwise((Tooltip) null));
+
             finishButton.disableProperty().bind(Bindings.isEmpty(listItems));
 
             // Layout

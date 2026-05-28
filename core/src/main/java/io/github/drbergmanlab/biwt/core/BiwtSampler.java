@@ -115,17 +115,12 @@ public final class BiwtSampler {
         if (substrates.isEmpty()) {
             throw new IllegalArgumentException("substrates must not be empty");
         }
+        assertUniqueNames(substrates);
 
         List<NamedSubstrate> namedSubstrates = new ArrayList<>(substrates.size());
         long totalStart = System.nanoTime();
         for (SubstrateSpec spec : substrates) {
-            long t0 = System.nanoTime();
-            double[][] values = sampler.sample(server, plan.domain(),
-                    plan.grid().nx(), plan.grid().ny(), plan.kernel(), spec.channelIndex());
-            long elapsedMs = (System.nanoTime() - t0) / 1_000_000;
-            logger.info("Sampled '{}' (channel {}) in {} ms — grid {}×{}",
-                    spec.name(), spec.channelIndex(), elapsedMs, plan.grid().nx(), plan.grid().ny());
-            namedSubstrates.add(new NamedSubstrate(spec.name(), values));
+            namedSubstrates.add(sampleOne(server, plan, spec));
         }
         long totalMs = (System.nanoTime() - totalStart) / 1_000_000;
         logger.info("Sampled {} substrate(s) in {} ms total", substrates.size(), totalMs);
@@ -134,6 +129,32 @@ public final class BiwtSampler {
                 plan.domain(), plan.grid(),
                 plan.requestedStepMicrons(), plan.effectiveStepMicrons(),
                 namedSubstrates);
+    }
+
+    /**
+     * Sample a single substrate. Exposed so callers (notably the GUI) can drive the loop
+     * themselves and emit per-substrate progress between calls.
+     */
+    public NamedSubstrate sampleOne(ImageServer<BufferedImage> server,
+                                    SamplingPlan plan,
+                                    SubstrateSpec spec) throws IOException {
+        long t0 = System.nanoTime();
+        double[][] values = sampler.sample(server, plan.domain(),
+                plan.grid().nx(), plan.grid().ny(), plan.kernel(), spec.channelIndex());
+        long elapsedMs = (System.nanoTime() - t0) / 1_000_000;
+        logger.info("Sampled '{}' (channel {}) in {} ms — grid {}×{}",
+                spec.name(), spec.channelIndex(), elapsedMs, plan.grid().nx(), plan.grid().ny());
+        return new NamedSubstrate(spec.name(), values);
+    }
+
+    private static void assertUniqueNames(List<SubstrateSpec> substrates) {
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (SubstrateSpec s : substrates) {
+            if (!seen.add(s.name())) {
+                throw new IllegalArgumentException(
+                        "Duplicate substrate name '" + s.name() + "' — PhysiCell requires unique substrate names.");
+            }
+        }
     }
 
     /** One-shot convenience: {@code plan} + {@code sample} using the image's raw server channels. */
