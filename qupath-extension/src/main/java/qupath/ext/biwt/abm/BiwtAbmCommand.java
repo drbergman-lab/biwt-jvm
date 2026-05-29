@@ -30,6 +30,7 @@ import javafx.scene.control.ListView;
 import javafx.scene.control.ProgressBar;
 import javafx.scene.control.TextArea;
 import javafx.scene.control.TextField;
+import javafx.scene.layout.FlowPane;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
@@ -390,7 +391,7 @@ public final class BiwtAbmCommand {
         }
 
         // Color deconvolution — dropdown entries (prefixed "Deconvolved:") and expression
-        // identifiers (raw stain name, e.g. "Hematoxylin" / "H").
+        // identifiers (raw stain name, plus common short aliases like H/E when present).
         ColorDeconvolutionStains stains = imageData.getColorDeconvolutionStains();
         if (stains != null && isRgb) {
             for (int s = 1; s <= 3; s++) {
@@ -400,6 +401,11 @@ public final class BiwtAbmCommand {
                         ColorTransforms.createColorDeconvolvedChannel(stains, s);
                 options.add(new ChannelChoice("Deconvolved: " + stainName, transform));
                 extractors.put(stainName, img -> transform.extractChannel(raw, img, null));
+                // Standard short aliases for H&E. Skipped if they'd clash with an existing key.
+                String alias = shortAliasFor(stainName);
+                if (alias != null && !extractors.containsKey(alias)) {
+                    extractors.put(alias, img -> transform.extractChannel(raw, img, null));
+                }
             }
         }
 
@@ -416,6 +422,14 @@ public final class BiwtAbmCommand {
         options.add(ChannelChoice.EXPRESSION);
 
         return new ChannelSet(raw, options, extractors, isRgb);
+    }
+
+    /** Common short alias for an H&E stain name, or null if no obvious alias. */
+    private static String shortAliasFor(String stainName) {
+        String lower = stainName.toLowerCase(java.util.Locale.ROOT);
+        if (lower.startsWith("hematoxylin") || lower.equals("haematoxylin")) return "H";
+        if (lower.equals("eosin")) return "E";
+        return null;
     }
 
     // ---------------- step 6 (file save) ----------------
@@ -598,11 +612,32 @@ public final class BiwtAbmCommand {
             Label expressionStatus = new Label();
             expressionStatus.setWrapText(true);
 
+            // Clickable "Insert" row of every identifier the user can reference. Inserts at the
+            // current cursor position so the user can build an expression without memorizing
+            // QuPath's stain names.
+            FlowPane insertRow = new FlowPane(6, 4);
+            Label insertHeader = new Label("Insert:");
+            insertHeader.setStyle("-fx-text-fill: #555;");
+            insertRow.getChildren().add(insertHeader);
+            for (String id : sortedIdentifiers(channelSet.extractorsForExpression().keySet())) {
+                Button b = new Button(id);
+                b.setStyle("-fx-font-size: 11; -fx-padding: 1 6 1 6;");
+                b.setFocusTraversable(false);
+                b.setOnAction(ev -> {
+                    int caret = expressionArea.getCaretPosition();
+                    expressionArea.insertText(caret, id);
+                    expressionArea.requestFocus();
+                });
+                insertRow.getChildren().add(b);
+            }
+
             javafx.beans.binding.BooleanBinding isExpressionMode = Bindings.createBooleanBinding(
                     () -> channelBox.getValue() == ChannelChoice.EXPRESSION,
                     channelBox.valueProperty());
             expressionArea.visibleProperty().bind(isExpressionMode);
             expressionArea.managedProperty().bind(isExpressionMode);
+            insertRow.visibleProperty().bind(isExpressionMode);
+            insertRow.managedProperty().bind(isExpressionMode);
             expressionStatus.visibleProperty().bind(isExpressionMode);
             expressionStatus.managedProperty().bind(isExpressionMode);
 
@@ -698,11 +733,14 @@ public final class BiwtAbmCommand {
             form.add(channelBox, 1, 1);
             form.add(new Label("Expression:"), 0, 2);
             form.add(expressionArea, 1, 2);
-            form.add(new Label(""), 0, 3);  // spacer for the status row's row index
-            form.add(expressionStatus, 1, 3);
+            form.add(new Label(""), 0, 3);
+            form.add(insertRow, 1, 3);
+            form.add(new Label(""), 0, 4);
+            form.add(expressionStatus, 1, 4);
             GridPane.setHgrow(nameRow, Priority.ALWAYS);
             GridPane.setHgrow(channelBox, Priority.ALWAYS);
             GridPane.setHgrow(expressionArea, Priority.ALWAYS);
+            GridPane.setHgrow(insertRow, Priority.ALWAYS);
 
             HBox buttons = new HBox(10, addButton, finishButton, cancelButton);
             buttons.setAlignment(Pos.CENTER_RIGHT);
@@ -780,6 +818,28 @@ public final class BiwtAbmCommand {
                 if (entry.getKey().equalsIgnoreCase(id)) return entry.getValue();
             }
             throw new NoSuchElementException("Unknown identifier '" + id + "'.");
+        }
+
+        /**
+         * Stable ordering for the Insert palette: raw channels (single-letter R/G/B first),
+         * then deconvolved short aliases (H/E), then long stain names, then OD aliases.
+         * Within each bucket, alphabetical.
+         */
+        private static List<String> sortedIdentifiers(java.util.Set<String> keys) {
+            List<String> sorted = new ArrayList<>(keys);
+            sorted.sort((a, b) -> {
+                int ba = bucket(a), bb = bucket(b);
+                if (ba != bb) return Integer.compare(ba, bb);
+                return a.compareToIgnoreCase(b);
+            });
+            return sorted;
+        }
+
+        private static int bucket(String id) {
+            if (id.length() == 1) return 0;                 // R, G, B, H, E
+            if (id.startsWith("OD_") || id.equals("OD_sum")) return 3;
+            // Long stain names (Hematoxylin, Eosin, Residual, DAPI, …) and multi-letter channel names.
+            return 2;
         }
     }
 }
