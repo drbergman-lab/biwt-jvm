@@ -28,6 +28,7 @@ import javafx.scene.control.ChoiceBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.ListView;
 import javafx.scene.control.ProgressBar;
+import javafx.scene.control.TextArea;
 import javafx.scene.control.TextField;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
@@ -47,18 +48,26 @@ import qupath.lib.images.servers.ImageChannel;
 import qupath.lib.images.servers.ImageServer;
 import qupath.lib.images.servers.TransformedServerBuilder;
 import qupath.lib.gui.QuPathGUI;
+import qupath.ext.biwt.abm.transforms.ChannelMathTransform;
 import qupath.ext.biwt.abm.transforms.OpticalDensitySumTransform;
+import io.github.drbergmanlab.biwt.core.channelmath.Expression;
+import io.github.drbergmanlab.biwt.core.channelmath.ExpressionParseException;
+import io.github.drbergmanlab.biwt.core.channelmath.ExpressionParser;
 
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
 
 /**
  * The interactive wizard launched from <b>Extensions → BIWT → Sample substrates…</b>.
@@ -119,17 +128,31 @@ public final class BiwtAbmCommand {
         // Step 4: confirmation showing nx × ny and effective step.
         if (!confirmPlan(plan)) return;
 
-        // Step 5: build the channel choices (raw + deconvolved if H&E) and prompt for substrates.
+        // Step 5: build the channel choices (raw + deconvolved if H&E + OD-sum + Expression…)
+        // and prompt for substrates.
         ChannelSet channelSet = buildChannelSet(imageData);
         SubstrateChoices substrates = SubstrateDialog.show(qupath.getStage(), channelSet);
-        if (substrates == null || substrates.specs.isEmpty()) return;
+        if (substrates == null || substrates.substrates().isEmpty()) return;
 
         // Step 6: file-save chooser.
         Path outPath = chooseOutputPath(imageData);
         if (outPath == null) return;
 
+        // Build the sampling server: one channel per substrate, in user-submitted order.
+        List<ColorTransforms.ColorTransform> finalTransforms =
+                new ArrayList<>(substrates.substrates().size());
+        List<SubstrateSpec> specs = new ArrayList<>(substrates.substrates().size());
+        for (int i = 0; i < substrates.substrates().size(); i++) {
+            CommittedSubstrate cs = substrates.substrates().get(i);
+            finalTransforms.add(cs.transform());
+            specs.add(new SubstrateSpec(cs.name(), i));
+        }
+        ImageServer<BufferedImage> samplingServer = new TransformedServerBuilder(channelSet.rawServer())
+                .applyColorTransforms(finalTransforms)
+                .build();
+
         // Step 7: background sampling.
-        runSamplingTask(channelSet.transformedServer, plan, substrates.specs, outPath);
+        runSamplingTask(samplingServer, plan, specs, outPath);
     }
 
     // ---------------- steps 2 & 3 (plan: step size + detect domain) ----------------
@@ -341,46 +364,58 @@ public final class BiwtAbmCommand {
     // ---------------- step 5 (channel set + substrate dialog) ----------------
 
     /**
-     * Build a transformed server exposing every "logical channel" the user can pick from:
-     * the raw image channels, plus the color-deconvolution channels (Hematoxylin, Eosin,
-     * Residual) when the image has stains defined.
+     * Build the {@link ChannelSet}: dropdown options + per-identifier extractors for the
+     * expression editor. Each option carries the {@link ColorTransforms.ColorTransform} that
+     * produces its channel values from the raw server; the sampling server is constructed at
+     * Finish time, one channel per substrate.
      */
     private static ChannelSet buildChannelSet(ImageData<BufferedImage> imageData) {
         ImageServer<BufferedImage> raw = imageData.getServer();
         List<ImageChannel> rawChannels = raw.getMetadata().getChannels();
+        boolean isRgb = raw.isRGB();
 
-        List<ColorTransforms.ColorTransform> transforms = new ArrayList<>();
-        List<ChannelChoice> choices = new ArrayList<>();
+        List<ChannelChoice> options = new ArrayList<>();
+        Map<String, Function<BufferedImage, float[]>> extractors = new HashMap<>();
 
+        // Raw channels — dropdown entries AND expression identifiers.
         for (int i = 0; i < rawChannels.size(); i++) {
             ImageChannel c = rawChannels.get(i);
             String label = (c.getName() == null || c.getName().isBlank())
                     ? "Channel " + i
                     : c.getName();
-            transforms.add(ColorTransforms.createChannelExtractor(i));
-            choices.add(new ChannelChoice(label, transforms.size() - 1));
+            ColorTransforms.ColorTransform transform = ColorTransforms.createChannelExtractor(i);
+            options.add(new ChannelChoice(label, transform));
+            int band = i;
+            extractors.put(label, img -> ChannelMathTransform.readBand(img, band));
         }
 
+        // Color deconvolution — dropdown entries (prefixed "Deconvolved:") and expression
+        // identifiers (raw stain name, e.g. "Hematoxylin" / "H").
         ColorDeconvolutionStains stains = imageData.getColorDeconvolutionStains();
-        if (stains != null && raw.isRGB()) {
+        if (stains != null && isRgb) {
             for (int s = 1; s <= 3; s++) {
                 String stainName = stains.getStain(s).getName();
                 if (stainName == null || stainName.isBlank()) continue;
-                transforms.add(ColorTransforms.createColorDeconvolvedChannel(stains, s));
-                choices.add(new ChannelChoice("Deconvolved: " + stainName, transforms.size() - 1));
+                ColorTransforms.ColorTransform transform =
+                        ColorTransforms.createColorDeconvolvedChannel(stains, s);
+                options.add(new ChannelChoice("Deconvolved: " + stainName, transform));
+                extractors.put(stainName, img -> transform.extractChannel(raw, img, null));
             }
         }
 
-        // Per-pixel math channels — first instance of the broader "channel math" feature.
-        if (raw.isRGB()) {
-            transforms.add(new OpticalDensitySumTransform());
-            choices.add(new ChannelChoice("Optical density sum", transforms.size() - 1));
+        // OD-sum dropdown entry; OD identifier aliases for expressions.
+        if (isRgb) {
+            options.add(new ChannelChoice("Optical density sum", new OpticalDensitySumTransform()));
+            extractors.put("OD_R", img -> ChannelMathTransform.readOpticalDensity(img, 0));
+            extractors.put("OD_G", img -> ChannelMathTransform.readOpticalDensity(img, 1));
+            extractors.put("OD_B", img -> ChannelMathTransform.readOpticalDensity(img, 2));
+            extractors.put("OD_sum", img -> ChannelMathTransform.readOpticalDensitySum(img));
         }
 
-        ImageServer<BufferedImage> transformed = new TransformedServerBuilder(raw)
-                .applyColorTransforms(transforms)
-                .build();
-        return new ChannelSet(transformed, choices);
+        // Expression sentinel — always last in the dropdown.
+        options.add(ChannelChoice.EXPRESSION);
+
+        return new ChannelSet(raw, options, extractors, isRgb);
     }
 
     // ---------------- step 6 (file save) ----------------
@@ -503,40 +538,108 @@ public final class BiwtAbmCommand {
 
     // ---------------- supporting types ----------------
 
-    /** One row in the channel dropdown: human-readable label + its position in the transformed server. */
-    record ChannelChoice(String label, int indexInTransformedServer) {
+    /**
+     * One row in the channel dropdown. {@code transform} is the {@link ColorTransforms.ColorTransform}
+     * that produces this channel's values from the raw server — or {@code null} for the sentinel
+     * "Expression…" option that triggers the expression editor instead.
+     */
+    record ChannelChoice(String label, ColorTransforms.ColorTransform transform) {
         @Override public String toString() { return label; }
+
+        /** Sentinel option that opens the expression text area; {@code transform} is null. */
+        static final ChannelChoice EXPRESSION = new ChannelChoice("Expression…", null);
     }
 
-    /** The transformed server (raw + any derived channels) paired with its channel choices. */
-    record ChannelSet(ImageServer<BufferedImage> transformedServer, List<ChannelChoice> choices) {}
+    /**
+     * Everything the substrate dialog needs: the raw server (we build the sampling server from
+     * scratch at Finish, one channel per substrate), the dropdown options, and the per-identifier
+     * pixel extractors that an expression can reference.
+     */
+    record ChannelSet(
+            ImageServer<BufferedImage> rawServer,
+            List<ChannelChoice> options,
+            Map<String, Function<BufferedImage, float[]>> extractorsForExpression,
+            boolean rgb) {}
 
-    /** Wrapper for the substrate dialog's return value (specs already mapped to server indices). */
-    record SubstrateChoices(List<SubstrateSpec> specs) {}
+    /** One committed substrate: name, its own {@link ColorTransforms.ColorTransform}, and a label for the list. */
+    record CommittedSubstrate(String name, ColorTransforms.ColorTransform transform, String displayLabel) {}
 
-    /** Modal dialog: build a list of substrates with Add / Finish / Cancel. */
+    /** Wrapper for the substrate dialog's return value. */
+    record SubstrateChoices(List<CommittedSubstrate> substrates) {}
+
+    /** Modal dialog: build a list of substrates with Add / Finish / Cancel / Remove. */
     private static final class SubstrateDialog {
 
         static SubstrateChoices show(Stage owner, ChannelSet channelSet) {
-            if (channelSet.choices().isEmpty()) {
+            if (channelSet.options().isEmpty()) {
                 Dialogs.showErrorMessage(TITLE, "Image has no channels reported by its server.");
                 return null;
             }
 
-            List<SubstrateSpec> specs = new ArrayList<>();
+            List<CommittedSubstrate> committed = new ArrayList<>();
             ObservableList<String> listItems = FXCollections.observableArrayList();
             boolean[] confirmed = { false };
 
+            // -------- form fields --------
             TextField nameField = new TextField();
             nameField.setPromptText("e.g. oxygen");
             ChoiceBox<ChannelChoice> channelBox = new ChoiceBox<>();
-            channelBox.getItems().addAll(channelSet.choices());
+            channelBox.getItems().addAll(channelSet.options());
             channelBox.setConverter(new StringConverter<>() {
                 @Override public String toString(ChannelChoice c) { return c == null ? "" : c.label(); }
                 @Override public ChannelChoice fromString(String s) { return null; }
             });
             channelBox.getSelectionModel().selectFirst();
 
+            // -------- expression editor (shown only when "Expression…" is picked) --------
+            TextArea expressionArea = new TextArea();
+            expressionArea.setPromptText("e.g. 0.5*H - 0.3*E + clip(R, 0, 200)");
+            expressionArea.setPrefRowCount(2);
+            Label expressionStatus = new Label();
+            expressionStatus.setWrapText(true);
+
+            javafx.beans.binding.BooleanBinding isExpressionMode = Bindings.createBooleanBinding(
+                    () -> channelBox.getValue() == ChannelChoice.EXPRESSION,
+                    channelBox.valueProperty());
+            expressionArea.visibleProperty().bind(isExpressionMode);
+            expressionArea.managedProperty().bind(isExpressionMode);
+            expressionStatus.visibleProperty().bind(isExpressionMode);
+            expressionStatus.managedProperty().bind(isExpressionMode);
+
+            javafx.beans.property.SimpleObjectProperty<Expression> compiledExpression =
+                    new javafx.beans.property.SimpleObjectProperty<>(null);
+            Runnable revalidateExpression = () -> {
+                String text = expressionArea.getText() == null ? "" : expressionArea.getText().trim();
+                if (text.isEmpty()) {
+                    compiledExpression.set(null);
+                    expressionStatus.setText("");
+                    return;
+                }
+                try {
+                    Expression e = ExpressionParser.parse(text);
+                    String missing = findMissingIdentifier(e, channelSet.extractorsForExpression());
+                    if (missing != null) {
+                        compiledExpression.set(null);
+                        expressionStatus.setText("✗ Unknown channel '" + missing + "'.");
+                        expressionStatus.setStyle("-fx-text-fill: #cc0000;");
+                        return;
+                    }
+                    compiledExpression.set(e);
+                    expressionStatus.setText("✓ uses " + String.join(", ", e.referencedIdentifiers()));
+                    expressionStatus.setStyle("-fx-text-fill: #007700;");
+                } catch (ExpressionParseException ex) {
+                    compiledExpression.set(null);
+                    expressionStatus.setText("✗ " + ex.getMessage());
+                    expressionStatus.setStyle("-fx-text-fill: #cc0000;");
+                }
+            };
+            expressionArea.textProperty().addListener((obs, oldVal, newVal) -> revalidateExpression.run());
+            // Re-validate when switching INTO expression mode (in case the user already typed text).
+            channelBox.valueProperty().addListener((obs, oldVal, newVal) -> {
+                if (newVal == ChannelChoice.EXPRESSION) revalidateExpression.run();
+            });
+
+            // -------- list + remove --------
             ListView<String> list = new ListView<>(listItems);
             list.setPrefHeight(140);
 
@@ -546,22 +649,21 @@ public final class BiwtAbmCommand {
             removeButton.setOnAction(e -> {
                 int idx = list.getSelectionModel().getSelectedIndex();
                 if (idx < 0) return;
-                specs.remove(idx);
+                committed.remove(idx);
                 listItems.remove(idx);
             });
 
+            // -------- buttons --------
             Button addButton = new Button("Add substrate");
             Button finishButton = new Button("Finish");
             Button cancelButton = new Button("Cancel");
 
-            // PhysiCell requires unique substrate names — disable Add when the typed name
-            // already appears in the list. (Tooltips on disabled buttons don't fire in JavaFX,
-            // so an always-visible inline warning is the discoverable signal.)
+            // PhysiCell requires unique substrate names — disable Add when typed name is duplicate.
             javafx.beans.binding.BooleanBinding nameAlreadyUsed = Bindings.createBooleanBinding(
                     () -> {
                         String n = nameField.getText().trim();
                         if (n.isEmpty()) return false;
-                        return specs.stream().anyMatch(s -> s.name().equals(n));
+                        return committed.stream().anyMatch(s -> s.name().equals(n));
                     },
                     nameField.textProperty(), listItems);
 
@@ -573,7 +675,8 @@ public final class BiwtAbmCommand {
             addButton.disableProperty().bind(
                     nameField.textProperty().isEmpty()
                             .or(channelBox.getSelectionModel().selectedItemProperty().isNull())
-                            .or(nameAlreadyUsed));
+                            .or(nameAlreadyUsed)
+                            .or(isExpressionMode.and(compiledExpression.isNull())));
             finishButton.disableProperty().bind(Bindings.isEmpty(listItems));
 
             // Enter in the name field commits the substrate, if Add is enabled.
@@ -581,7 +684,7 @@ public final class BiwtAbmCommand {
                 if (!addButton.isDisable()) addButton.fire();
             });
 
-            // Layout
+            // -------- layout --------
             HBox nameRow = new HBox(8, nameField, nameWarning);
             HBox.setHgrow(nameField, Priority.ALWAYS);
             nameRow.setAlignment(Pos.CENTER_LEFT);
@@ -593,8 +696,13 @@ public final class BiwtAbmCommand {
             form.add(nameRow, 1, 0);
             form.add(new Label("Channel:"), 0, 1);
             form.add(channelBox, 1, 1);
+            form.add(new Label("Expression:"), 0, 2);
+            form.add(expressionArea, 1, 2);
+            form.add(new Label(""), 0, 3);  // spacer for the status row's row index
+            form.add(expressionStatus, 1, 3);
             GridPane.setHgrow(nameRow, Priority.ALWAYS);
             GridPane.setHgrow(channelBox, Priority.ALWAYS);
+            GridPane.setHgrow(expressionArea, Priority.ALWAYS);
 
             HBox buttons = new HBox(10, addButton, finishButton, cancelButton);
             buttons.setAlignment(Pos.CENTER_RIGHT);
@@ -610,7 +718,7 @@ public final class BiwtAbmCommand {
                     form,
                     buttons);
             root.setPadding(new Insets(15));
-            root.setPrefWidth(420);
+            root.setPrefWidth(460);
 
             Stage stage = new Stage();
             stage.setTitle("BIWT — define substrates");
@@ -622,8 +730,24 @@ public final class BiwtAbmCommand {
             addButton.setOnAction(e -> {
                 ChannelChoice choice = channelBox.getValue();
                 String name = nameField.getText().trim();
-                specs.add(new SubstrateSpec(name, choice.indexInTransformedServer()));
-                listItems.add(name + "  —  " + choice.label());
+                CommittedSubstrate cs;
+                if (choice == ChannelChoice.EXPRESSION) {
+                    Expression expr = compiledExpression.get();
+                    if (expr == null) return;
+                    Map<String, Function<BufferedImage, float[]>> exprExtractors = new HashMap<>();
+                    for (String id : expr.referencedIdentifiers()) {
+                        exprExtractors.put(id, lookupExtractor(channelSet.extractorsForExpression(), id));
+                    }
+                    String exprText = expressionArea.getText().trim();
+                    ChannelMathTransform transform = ChannelMathTransform.of(
+                            "expr: " + exprText, expr, exprExtractors, channelSet.rgb());
+                    cs = new CommittedSubstrate(name, transform, name + "  —  " + exprText);
+                    expressionArea.clear();
+                } else {
+                    cs = new CommittedSubstrate(name, choice.transform(), name + "  —  " + choice.label());
+                }
+                committed.add(cs);
+                listItems.add(cs.displayLabel());
                 nameField.clear();
                 nameField.requestFocus();
             });
@@ -631,7 +755,31 @@ public final class BiwtAbmCommand {
             cancelButton.setOnAction(e -> { confirmed[0] = false; stage.close(); });
 
             stage.showAndWait();
-            return confirmed[0] ? new SubstrateChoices(specs) : null;
+            return confirmed[0] ? new SubstrateChoices(committed) : null;
+        }
+
+        /** Returns the first identifier in {@code expr} that has no extractor, or null if all resolve. */
+        private static String findMissingIdentifier(Expression expr,
+                                                    Map<String, Function<BufferedImage, float[]>> extractors) {
+            for (String id : expr.referencedIdentifiers()) {
+                if (!extractors.containsKey(id)) {
+                    boolean foundIgnoreCase = extractors.keySet().stream()
+                            .anyMatch(k -> k.equalsIgnoreCase(id));
+                    if (!foundIgnoreCase) return id;
+                }
+            }
+            return null;
+        }
+
+        /** Case-insensitive lookup; throws if no match. */
+        private static Function<BufferedImage, float[]> lookupExtractor(
+                Map<String, Function<BufferedImage, float[]>> extractors, String id) {
+            Function<BufferedImage, float[]> direct = extractors.get(id);
+            if (direct != null) return direct;
+            for (var entry : extractors.entrySet()) {
+                if (entry.getKey().equalsIgnoreCase(id)) return entry.getValue();
+            }
+            throw new NoSuchElementException("Unknown identifier '" + id + "'.");
         }
     }
 }
