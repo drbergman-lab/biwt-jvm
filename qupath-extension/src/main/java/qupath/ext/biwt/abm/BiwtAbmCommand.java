@@ -20,6 +20,9 @@ import javafx.concurrent.Task;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Scene;
+import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.paint.Color;
+import javafx.scene.text.Font;
 import javafx.scene.control.Button;
 import javafx.scene.control.ChoiceBox;
 import javafx.scene.control.Label;
@@ -189,13 +192,24 @@ public final class BiwtAbmCommand {
         }
         VBox originBox = new VBox(4, centerRadio, topLeftRadio);
 
+        // Small canvas that draws the ABM domain and shows where (0, 0) lands for the
+        // current radio selection. Re-renders whenever the toggle changes.
+        javafx.scene.canvas.Canvas originPreview = new javafx.scene.canvas.Canvas(140, 100);
+        Runnable redrawPreview = () -> drawOriginPreview(originPreview,
+                topLeftRadio.isSelected() ? CoordinateOrigin.IMAGE_TOP_LEFT : CoordinateOrigin.IMAGE_CENTER);
+        redrawPreview.run();
+        originGroup.selectedToggleProperty().addListener((obs, oldT, newT) -> redrawPreview.run());
+
+        HBox originRow = new HBox(20, originBox, originPreview);
+        originRow.setAlignment(Pos.CENTER_LEFT);
+
         GridPane form = new GridPane();
         form.setHgap(10);
         form.setVgap(10);
         form.add(new Label("Voxel size (µm):"), 0, 0);
         form.add(stepField, 1, 0);
         form.add(new Label("ABM (0, 0) at:"), 0, 1);
-        form.add(originBox, 1, 1);
+        form.add(originRow, 1, 1);
 
         Button okButton = new Button("OK");
         Button cancelButton = new Button("Cancel");
@@ -236,6 +250,60 @@ public final class BiwtAbmCommand {
         dialog.showAndWait();
 
         return resultRef.get();
+    }
+
+    /**
+     * Render a tiny "ABM domain" rectangle on the given canvas with a dot marking where (0, 0)
+     * lands for the chosen origin convention. Re-called whenever the radio selection changes.
+     */
+    private static void drawOriginPreview(javafx.scene.canvas.Canvas canvas, CoordinateOrigin origin) {
+        GraphicsContext g = canvas.getGraphicsContext2D();
+        double W = canvas.getWidth();
+        double H = canvas.getHeight();
+        g.clearRect(0, 0, W, H);
+
+        // ABM domain rectangle (light fill, gray border).
+        double pad = 12;
+        double rx = pad, ry = pad, rw = W - 2 * pad, rh = H - 2 * pad;
+        g.setFill(Color.gray(0.96));
+        g.fillRect(rx, ry, rw, rh);
+        g.setStroke(Color.gray(0.5));
+        g.setLineWidth(1);
+        g.strokeRect(rx, ry, rw, rh);
+
+        // "ABM domain" caption inside the rectangle, top-left, in muted gray.
+        g.setFill(Color.gray(0.45));
+        g.setFont(Font.font(9));
+        g.fillText("ABM domain", rx + 4, ry + 11);
+
+        // Dot at the origin location.
+        double dotX, dotY;
+        switch (origin) {
+            case IMAGE_TOP_LEFT -> {
+                dotX = rx;
+                dotY = ry;
+            }
+            case IMAGE_CENTER -> {
+                dotX = rx + rw / 2;
+                dotY = ry + rh / 2;
+            }
+            default -> {
+                dotX = rx + rw / 2;
+                dotY = ry + rh / 2;
+            }
+        }
+        double dotR = 4;
+        g.setFill(Color.CRIMSON);
+        g.fillOval(dotX - dotR, dotY - dotR, 2 * dotR, 2 * dotR);
+
+        // Label (0,0) — position so it stays inside the canvas for both layouts.
+        g.setFill(Color.BLACK);
+        g.setFont(Font.font(11));
+        if (origin == CoordinateOrigin.IMAGE_TOP_LEFT) {
+            g.fillText("(0, 0)", dotX + 6, dotY + 14);
+        } else {
+            g.fillText("(0, 0)", dotX + 6, dotY + 4);
+        }
     }
 
     // ---------------- step 4 (plan confirmation) ----------------
