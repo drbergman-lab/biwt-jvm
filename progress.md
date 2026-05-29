@@ -164,6 +164,73 @@ Next sessions queued:
 
 ---
 
+## Session: origin anchor refactor (2026-05-28, same day)
+
+### Goal
+
+User flagged that the "Image center" / "Image top-left" labels on the
+origin radio were misleading: when the user defined an `abm_domain`
+annotation, the (0, 0) point still sat at the image center (often far
+from the annotation), not the annotation center. The PhysiCell-natural
+expectation is for the origin to track the ABM domain itself.
+
+### Key design decisions
+
+**Anchor on the voxel grid, not the image.**
+Renamed `CoordinateOrigin.IMAGE_CENTER` → `ABM_DOMAIN_CENTER` and
+`IMAGE_TOP_LEFT` → `ABM_DOMAIN_TOP_LEFT`. The math now depends only on
+the grid extent (`nx · stepSize`, `ny · stepSize`) and the origin
+choice — never on where the annotation sits on the slide.
+
+For `ABM_DOMAIN_CENTER`: `xStart = -gridW/2`, `yStart = +gridH/2`.
+The grid is symmetric around (0, 0) — what PhysiCell expects for a
+domain defined by `x_min, x_max = -W/2, +W/2`.
+
+For `ABM_DOMAIN_TOP_LEFT`: `xStart = 0`, `yStart = 0`. Grid extends
+into the fourth quadrant.
+
+**Drop the image-dim parameters from `VoxelGrid.cover`.**
+The new math doesn't reference image dimensions at all. Removed the
+`imageWidthMicrons` and `imageHeightMicrons` parameters; `cover()` is
+now `(annotationWidth, annotationHeight, stepSize, origin)`. Also
+removed the `annotationXMin/YMin` params since the position on the
+slide is irrelevant. Updated `BiwtSampler.plan` to stop computing
+image dims.
+
+**Grid-center vs annotation-center for non-divisible steps.**
+For a 41 µm annotation with 20 µm step, the grid is 60 µm wide. With
+the new semantics, the grid center is at (0, 0) but the annotation
+center is offset by ~9.5 µm (half the overhang). Picked grid-center
+because it gives PhysiCell-symmetric coords; the half-step offset is
+usually negligible relative to the domain size, and the alternative
+(annotation-center) would make `x_min, x_max` asymmetric, which
+PhysiCell handles awkwardly.
+
+### Test updates
+
+- `VoxelGridTest` — rewrote the cover-related tests with the new API
+  shape. Added `abmDomainCenterMakesGridSymmetric` and
+  `abmDomainCenterStaysSymmetricWhenStepDoesNotDivideAnnotation` to
+  pin the symmetry guarantee. Old `imageCenterOriginShiftsToImageCenter`
+  removed (its premise — origin tracks image, not grid — no longer
+  applies).
+- `BiwtSamplerTest`, `SubstrateCsvWriterTest` — sed rename of enum
+  values; assertions unchanged (those tests used annotation = whole
+  image or didn't check coordinates beyond the y-flip).
+
+### Wizard updates
+
+- Radio labels: "ABM domain center" / "ABM domain top-left".
+- Inline comment in the dialog source explains the wording is
+  deliberate (track the domain, not the image).
+- Origin preview canvas (the small rectangle + dot graphic) is
+  unchanged — its rectangle was always meant to represent the ABM
+  domain; the labels now match the implementation.
+
+All 31 core tests green.
+
+---
+
 ## Session: origin radio + OD-sum + channel-math PRD (2026-05-28, same day)
 
 ### Goal

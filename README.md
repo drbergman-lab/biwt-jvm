@@ -128,7 +128,7 @@ The build is two modules:
 
 ### Completed (post-v0.1.0)
 
-- [x] **Coordinate-origin radio** — wizard's parameters dialog lets the user pick image-center or image-top-left for the ABM (0, 0).
+- [x] **Coordinate-origin radio** — wizard's parameters dialog lets the user pick ABM-domain center or ABM-domain top-left for the (0, 0) point, with a live preview canvas showing where the origin lands. The origin tracks the voxel grid (which is the ABM domain), not the image — so it sits on the annotation no matter where the annotation sits on the slide.
 - [x] **OD-sum channel** — added "Optical density sum" to the channel dropdown for RGB images.
 
 ### Planned (post-MVP)

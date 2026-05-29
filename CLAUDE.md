@@ -153,6 +153,10 @@ A feature is complete when **all** of:
 - **PhysiCell coordinate convention.** Voxel centers follow
   `x_start + (i+0.5)·dx`. The y-axis is flipped (math `+y` is up, image rows
   are top→bottom). See `VoxelGrid` Javadoc.
+- **Origin is anchored to the ABM domain, not the image.** `CoordinateOrigin`
+  is `ABM_DOMAIN_CENTER` / `ABM_DOMAIN_TOP_LEFT`. The grid coordinates depend
+  only on the grid extent and the origin choice — never on where the annotation
+  sits on the slide.
 - **Clip-to-annotation rule.** The voxel grid covers the annotation as a
   smallest-integer-multiple bounding box; sampling intersects each window
   with the annotation Shape and writes NaN for empty intersections.

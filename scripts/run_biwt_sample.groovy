@@ -39,7 +39,7 @@ def request = new SamplingRequest(
     imageData,
     options,
     stepSizeMicrons,
-    CoordinateOrigin.IMAGE_CENTER,
+    CoordinateOrigin.ABM_DOMAIN_CENTER,
     [new SubstrateSpec("intensity", channelIndex)]
 )
 

@@ -9,21 +9,21 @@ package io.github.drbergmanlab.biwt.core.coord;
  * top-to-bottom. So voxel {@code j = 0} (the image's top row) gets the <em>largest</em> y value
  * and {@code j = ny - 1} gets the smallest. The {@link #yCenter} formula reflects this:
  * <pre>yCenter(j) = yStartMicrons - (j + 0.5) * dyMicrons</pre>
- * where {@code yStartMicrons} is the math-µm y of the image's top edge minus the annotation's
- * top-pixel offset. The grid orientation still matches the image — top-left voxel is still
- * (i = 0, j = 0), no transpose, no rotation — only the µm coordinate associated with each j flips.
+ * The grid orientation still matches the image — top-left voxel is still {@code (i = 0, j = 0)},
+ * no transpose, no rotation — only the µm coordinate associated with each {@code j} flips.
  *
  * <p>For the MVP, the grid is sized so the smallest integer multiple of {@code stepSizeMicrons}
  * fully covers the annotation in each axis. The grid extent may therefore overhang the annotation
  * by up to {@code stepSize - 1} pixels per side; the sampler clips each window to the annotation.
  *
- * <p>The origin is determined by {@link CoordinateOrigin}:
+ * <p>The origin is anchored to the <em>voxel grid</em>, not to the image — the grid IS the ABM
+ * domain. {@link CoordinateOrigin} picks where (0, 0) sits on it:
  * <ul>
- *   <li>{@link CoordinateOrigin#IMAGE_CENTER} (MVP default): the image center maps to (0, 0).
- *       The image spans {@code [-W/2, +W/2] × [-H/2, +H/2]} in µm.
- *   <li>{@link CoordinateOrigin#IMAGE_TOP_LEFT} (deferred): the image top-left maps to (0, 0)
- *       and the image extends into the fourth quadrant — x grows right, y grows up (so
- *       image-bottom is at the most negative y).
+ *   <li>{@link CoordinateOrigin#ABM_DOMAIN_CENTER}: grid center maps to (0, 0).
+ *       Grid spans {@code [-W/2, +W/2] × [-H/2, +H/2]} in µm — the symmetric domain PhysiCell expects.
+ *   <li>{@link CoordinateOrigin#ABM_DOMAIN_TOP_LEFT}: grid top-left corner maps to (0, 0).
+ *       Grid extends into the fourth quadrant — x grows right, y grows up (so the image-bottom edge
+ *       of the grid is at the most negative y).
  * </ul>
  */
 public record VoxelGrid(
@@ -60,27 +60,23 @@ public record VoxelGrid(
      * {@code (annotationWidthMicrons, annotationHeightMicrons)}, using the requested step size.
      *
      * <p>The grid uses the smallest {@code nx} and {@code ny} such that
-     * {@code nx * stepSizeMicrons >= annotationWidthMicrons} and similarly for y.
-     * Per the clip-to-annotation rule, the grid extent may overhang the annotation by up to
+     * {@code nx * stepSizeMicrons >= annotationWidthMicrons} and similarly for y. Per the
+     * clip-to-annotation rule, the grid extent may overhang the annotation by up to
      * {@code stepSizeMicrons} in each axis; the sampler handles the intersection.
+     *
+     * <p>The math-µm origin (where (0, 0) sits) is anchored to the voxel grid itself per the
+     * {@code origin} argument — the image dimensions and the annotation's image-pixel position
+     * don't enter the equation.
      *
      * @param annotationWidthMicrons annotation width in µm (must be > 0)
      * @param annotationHeightMicrons annotation height in µm (must be > 0)
      * @param stepSizeMicrons requested step size in µm (must be > 0)
-     * @param imageWidthMicrons image width in µm, used only when {@code origin == IMAGE_CENTER}
-     * @param imageHeightMicrons image height in µm, used only when {@code origin == IMAGE_CENTER}
-     * @param annotationXMinMicrons annotation top-left x in image-pixel-equivalent µm
-     * @param annotationYMinMicrons annotation top-left y in image-pixel-equivalent µm
      * @param origin coordinate origin convention
      */
     public static VoxelGrid cover(
             double annotationWidthMicrons,
             double annotationHeightMicrons,
             double stepSizeMicrons,
-            double imageWidthMicrons,
-            double imageHeightMicrons,
-            double annotationXMinMicrons,
-            double annotationYMinMicrons,
             CoordinateOrigin origin
     ) {
         if (!(stepSizeMicrons > 0)) {
@@ -94,27 +90,24 @@ public record VoxelGrid(
         int nx = (int) Math.ceil(annotationWidthMicrons / stepSizeMicrons);
         int ny = (int) Math.ceil(annotationHeightMicrons / stepSizeMicrons);
 
-        // Math-µm coordinates of the image-pixel top-left, per origin convention.
-        // x grows right (same as image-pixel x); y grows up (opposite of image-pixel y).
-        double xShift;  // math-µm x of image-pixel-x = 0
-        double yShift;  // math-µm y of image-pixel-y = 0
+        double gridWidthMicrons = nx * stepSizeMicrons;
+        double gridHeightMicrons = ny * stepSizeMicrons;
+
+        double xStart;
+        double yStart;
         switch (origin) {
-            case IMAGE_TOP_LEFT -> {
-                xShift = 0;
-                yShift = 0;
+            case ABM_DOMAIN_TOP_LEFT -> {
+                // Grid top-left → (0, 0). Voxel (0, 0) center at (+0.5·dx, −0.5·dy).
+                xStart = 0;
+                yStart = 0;
             }
-            case IMAGE_CENTER -> {
-                xShift = -imageWidthMicrons / 2.0;
-                yShift = imageHeightMicrons / 2.0;
+            case ABM_DOMAIN_CENTER -> {
+                // Grid center → (0, 0). Grid spans [-W/2, +W/2] × [-H/2, +H/2].
+                xStart = -gridWidthMicrons / 2.0;
+                yStart = gridHeightMicrons / 2.0;
             }
             default -> throw new IllegalArgumentException("Unknown origin: " + origin);
         }
-
-        // xStart is the µm x of image-pixel-x = annotationXMinMicrons (grows right).
-        double xStart = xShift + annotationXMinMicrons;
-        // yStart is the µm y of image-pixel-y = annotationYMinMicrons (math y, grows up,
-        // so subtracting the image-pixel y offset).
-        double yStart = yShift - annotationYMinMicrons;
 
         return new VoxelGrid(nx, ny, stepSizeMicrons, stepSizeMicrons, xStart, yStart, origin);
     }

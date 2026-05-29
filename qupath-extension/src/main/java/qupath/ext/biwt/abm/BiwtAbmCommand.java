@@ -85,7 +85,7 @@ public final class BiwtAbmCommand {
 
     private static final String TITLE = "BIWT";
     private static final double DEFAULT_STEP_MICRONS = 20.0;
-    private static final CoordinateOrigin DEFAULT_ORIGIN = CoordinateOrigin.IMAGE_CENTER;
+    private static final CoordinateOrigin DEFAULT_ORIGIN = CoordinateOrigin.ABM_DOMAIN_CENTER;
 
     /** Step size in µm + the coordinate-origin convention the user picked. */
     private record PlanInputs(double stepMicrons, CoordinateOrigin origin) {}
@@ -180,23 +180,26 @@ public final class BiwtAbmCommand {
         TextField stepField = new TextField(Double.toString(DEFAULT_STEP_MICRONS));
         stepField.setPrefColumnCount(8);
 
-        javafx.scene.control.RadioButton centerRadio = new javafx.scene.control.RadioButton("Image center");
-        javafx.scene.control.RadioButton topLeftRadio = new javafx.scene.control.RadioButton("Image top-left");
+        javafx.scene.control.RadioButton centerRadio = new javafx.scene.control.RadioButton("ABM domain center");
+        javafx.scene.control.RadioButton topLeftRadio = new javafx.scene.control.RadioButton("ABM domain top-left");
         javafx.scene.control.ToggleGroup originGroup = new javafx.scene.control.ToggleGroup();
         centerRadio.setToggleGroup(originGroup);
         topLeftRadio.setToggleGroup(originGroup);
-        if (DEFAULT_ORIGIN == CoordinateOrigin.IMAGE_TOP_LEFT) {
+        if (DEFAULT_ORIGIN == CoordinateOrigin.ABM_DOMAIN_TOP_LEFT) {
             topLeftRadio.setSelected(true);
         } else {
             centerRadio.setSelected(true);
         }
+        // (The "ABM domain" wording is deliberate: the origin tracks the voxel grid — i.e. the
+        // annotation when one is defined — not the image as a whole. This matters when the
+        // annotation sits in a corner of the slide.)
         VBox originBox = new VBox(4, centerRadio, topLeftRadio);
 
         // Small canvas that draws the ABM domain and shows where (0, 0) lands for the
         // current radio selection. Re-renders whenever the toggle changes.
         javafx.scene.canvas.Canvas originPreview = new javafx.scene.canvas.Canvas(140, 100);
         Runnable redrawPreview = () -> drawOriginPreview(originPreview,
-                topLeftRadio.isSelected() ? CoordinateOrigin.IMAGE_TOP_LEFT : CoordinateOrigin.IMAGE_CENTER);
+                topLeftRadio.isSelected() ? CoordinateOrigin.ABM_DOMAIN_TOP_LEFT : CoordinateOrigin.ABM_DOMAIN_CENTER);
         redrawPreview.run();
         originGroup.selectedToggleProperty().addListener((obs, oldT, newT) -> redrawPreview.run());
 
@@ -233,8 +236,8 @@ public final class BiwtAbmCommand {
                 return;
             }
             CoordinateOrigin origin = topLeftRadio.isSelected()
-                    ? CoordinateOrigin.IMAGE_TOP_LEFT
-                    : CoordinateOrigin.IMAGE_CENTER;
+                    ? CoordinateOrigin.ABM_DOMAIN_TOP_LEFT
+                    : CoordinateOrigin.ABM_DOMAIN_CENTER;
             resultRef.set(new PlanInputs(step, origin));
             dialog.close();
         });
@@ -279,11 +282,11 @@ public final class BiwtAbmCommand {
         // Dot at the origin location.
         double dotX, dotY;
         switch (origin) {
-            case IMAGE_TOP_LEFT -> {
+            case ABM_DOMAIN_TOP_LEFT -> {
                 dotX = rx;
                 dotY = ry;
             }
-            case IMAGE_CENTER -> {
+            case ABM_DOMAIN_CENTER -> {
                 dotX = rx + rw / 2;
                 dotY = ry + rh / 2;
             }
@@ -299,7 +302,7 @@ public final class BiwtAbmCommand {
         // Label (0,0) — position so it stays inside the canvas for both layouts.
         g.setFill(Color.BLACK);
         g.setFont(Font.font(11));
-        if (origin == CoordinateOrigin.IMAGE_TOP_LEFT) {
+        if (origin == CoordinateOrigin.ABM_DOMAIN_TOP_LEFT) {
             g.fillText("(0, 0)", dotX + 6, dotY + 14);
         } else {
             g.fillText("(0, 0)", dotX + 6, dotY + 4);

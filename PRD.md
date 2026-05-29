@@ -104,16 +104,22 @@ ABM-µm coordinates using PhysiCell's voxel-center convention.
 - `xCenter(i) = xStart + (i + 0.5)·dx` (PhysiCell convention).
 - `yCenter(j) = yStart - (j + 0.5)·dy` — y is flipped because image rows go
   top→bottom but math +y is up.
-- `CoordinateOrigin.IMAGE_CENTER`: image center maps to (0, 0). Spans
-  `[-W/2, +W/2] × [-H/2, +H/2]` in µm.
-- `CoordinateOrigin.IMAGE_TOP_LEFT`: image top-left maps to (0, 0); image
-  spans into the fourth quadrant (x ≥ 0, y ≤ 0).
+- `CoordinateOrigin.ABM_DOMAIN_CENTER`: grid center maps to (0, 0).
+  Spans `[-W/2, +W/2] × [-H/2, +H/2]` in µm — the symmetric domain PhysiCell
+  expects, where `W` and `H` are the grid extent (not the image extent).
+- `CoordinateOrigin.ABM_DOMAIN_TOP_LEFT`: grid top-left maps to (0, 0); the
+  domain spans into the fourth quadrant (x ≥ 0, y ≤ 0).
+
+The origin tracks the **voxel grid**, not the image — so when an annotation
+is the domain, the (0, 0) point sits on the annotation no matter where it
+happens to be on the slide.
 
 **Acceptance criteria:**
 
 - Voxel j = 0 (image top) has the **largest** y; voxel j = ny − 1 has the smallest.
-- For an image-aligned annotation 100 µm × 100 µm with dx = 20 µm and
-  `IMAGE_CENTER`: 5 × 5 grid, centers at {-40, -20, 0, 20, 40} on each axis.
+- For an annotation 100 µm × 100 µm with dx = 20 µm and
+  `ABM_DOMAIN_CENTER`: 5 × 5 grid, centers at {-40, -20, 0, 20, 40} on each axis
+  — same symmetric output regardless of where the annotation sits on the slide.
 
 ---
 

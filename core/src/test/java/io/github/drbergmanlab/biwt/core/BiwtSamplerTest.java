@@ -41,7 +41,7 @@ class BiwtSamplerTest {
                 data,
                 DomainDetectionOptions.defaults(),
                 10.0,
-                CoordinateOrigin.IMAGE_TOP_LEFT,
+                CoordinateOrigin.ABM_DOMAIN_TOP_LEFT,
                 List.of(new SubstrateSpec("intensity", 0))
         );
         SamplingResult result = BiwtSampler.create().run(req);
@@ -75,7 +75,7 @@ class BiwtSamplerTest {
                 data,
                 DomainDetectionOptions.defaults(),
                 7.0,
-                CoordinateOrigin.IMAGE_TOP_LEFT,
+                CoordinateOrigin.ABM_DOMAIN_TOP_LEFT,
                 List.of(new SubstrateSpec("uniform", 0))
         );
         SamplingResult result = BiwtSampler.create().run(req);
@@ -97,7 +97,7 @@ class BiwtSamplerTest {
                 data,
                 DomainDetectionOptions.wholeImageFallback(),
                 10.0,
-                CoordinateOrigin.IMAGE_TOP_LEFT,
+                CoordinateOrigin.ABM_DOMAIN_TOP_LEFT,
                 List.of(new SubstrateSpec("oxygen", 0))
         );
         SamplingResult result = BiwtSampler.create().run(req);
@@ -126,7 +126,7 @@ class BiwtSamplerTest {
                 data,
                 DomainDetectionOptions.wholeImageFallback(),
                 10.0,
-                CoordinateOrigin.IMAGE_TOP_LEFT,
+                CoordinateOrigin.ABM_DOMAIN_TOP_LEFT,
                 List.of(new SubstrateSpec("x", 0))
         );
         assertThrows(RuntimeException.class, () -> BiwtSampler.create().run(req));

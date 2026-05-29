@@ -17,7 +17,7 @@ class SubstrateCsvWriterTest {
     void writesPhysiCellSchemaForSingleSubstrate(@TempDir Path tmp) throws Exception {
         // 3x1 grid, dx=20, top-left origin: xCenter = 10, 30, 50 (i = 0..2).
         // Y axis is flipped relative to image rows: with yStart=0, yCenter(0) = -10.
-        VoxelGrid grid = new VoxelGrid(3, 1, 20.0, 20.0, 0.0, 0.0, CoordinateOrigin.IMAGE_TOP_LEFT);
+        VoxelGrid grid = new VoxelGrid(3, 1, 20.0, 20.0, 0.0, 0.0, CoordinateOrigin.ABM_DOMAIN_TOP_LEFT);
         NamedSubstrate oxygen = new NamedSubstrate("oxygen", new double[][] {{38.0, 37.0, 36.0}});
 
         Path out = tmp.resolve("substrates.csv");
@@ -34,7 +34,7 @@ class SubstrateCsvWriterTest {
     @Test
     void writesMultipleSubstratesInColumnOrder(@TempDir Path tmp) throws Exception {
         // 2x2 grid, dx=20, top-left origin: xCenter = 10, 30; yCenter(0) = -10, yCenter(1) = -30.
-        VoxelGrid grid = new VoxelGrid(2, 2, 20.0, 20.0, 0.0, 0.0, CoordinateOrigin.IMAGE_TOP_LEFT);
+        VoxelGrid grid = new VoxelGrid(2, 2, 20.0, 20.0, 0.0, 0.0, CoordinateOrigin.ABM_DOMAIN_TOP_LEFT);
         NamedSubstrate oxygen = new NamedSubstrate("oxygen", new double[][] {{38.0, 37.0}, {36.0, 35.0}});
         NamedSubstrate ecm = new NamedSubstrate("ecm", new double[][] {{1.0, 0.98}, {0.96, 0.94}});
 
@@ -52,7 +52,7 @@ class SubstrateCsvWriterTest {
 
     @Test
     void writesNanForEmptyIntersection(@TempDir Path tmp) throws Exception {
-        VoxelGrid grid = new VoxelGrid(2, 1, 10.0, 10.0, 0.0, 0.0, CoordinateOrigin.IMAGE_TOP_LEFT);
+        VoxelGrid grid = new VoxelGrid(2, 1, 10.0, 10.0, 0.0, 0.0, CoordinateOrigin.ABM_DOMAIN_TOP_LEFT);
         NamedSubstrate s = new NamedSubstrate("oxygen", new double[][] {{1.0, Double.NaN}});
 
         Path out = tmp.resolve("substrates.csv");
@@ -64,7 +64,7 @@ class SubstrateCsvWriterTest {
 
     @Test
     void rejectsMismatchedDimensions(@TempDir Path tmp) {
-        VoxelGrid grid = new VoxelGrid(3, 2, 20, 20, 0, 0, CoordinateOrigin.IMAGE_TOP_LEFT);
+        VoxelGrid grid = new VoxelGrid(3, 2, 20, 20, 0, 0, CoordinateOrigin.ABM_DOMAIN_TOP_LEFT);
         NamedSubstrate wrongShape = new NamedSubstrate("x", new double[][] {{1, 2}, {3, 4}}); // 2x2 vs grid 3x2
         assertThrows(IllegalArgumentException.class,
                 () -> new SubstrateCsvWriter().write(tmp.resolve("out.csv"), grid, List.of(wrongShape)));
@@ -72,7 +72,7 @@ class SubstrateCsvWriterTest {
 
     @Test
     void rejectsEmptySubstrateList(@TempDir Path tmp) {
-        VoxelGrid grid = new VoxelGrid(1, 1, 1, 1, 0, 0, CoordinateOrigin.IMAGE_TOP_LEFT);
+        VoxelGrid grid = new VoxelGrid(1, 1, 1, 1, 0, 0, CoordinateOrigin.ABM_DOMAIN_TOP_LEFT);
         assertThrows(IllegalArgumentException.class,
                 () -> new SubstrateCsvWriter().write(tmp.resolve("out.csv"), grid, List.of()));
     }

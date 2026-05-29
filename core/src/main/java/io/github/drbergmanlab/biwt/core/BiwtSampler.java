@@ -28,7 +28,7 @@ import java.util.List;
  *   <li>{@link #run(SamplingRequest)} — one-shot, headless. Best from Groovy:
  *       <pre>{@code
  * def request = new SamplingRequest(imageData, DomainDetectionOptions.wholeImageFallback(),
- *     20.0, CoordinateOrigin.IMAGE_CENTER, [new SubstrateSpec("oxygen", 0)])
+ *     20.0, CoordinateOrigin.ABM_DOMAIN_CENTER, [new SubstrateSpec("oxygen", 0)])
  * def result = BiwtSampler.create().run(request)
  * result.writeCsv(java.nio.file.Path.of("/tmp/substrates.csv"))
  *       }</pre>
@@ -70,7 +70,6 @@ public final class BiwtSampler {
         if (!(requestedStepMicrons > 0)) {
             throw new IllegalArgumentException("requestedStepMicrons must be positive (got " + requestedStepMicrons + ")");
         }
-        ImageServer<BufferedImage> server = imageData.getServer();
 
         AbmDomain domain = detector.detect(imageData, domainOptions);
 
@@ -83,16 +82,10 @@ public final class BiwtSampler {
         int stridePx = Math.max(1, (int) Math.round(requestedStepMicrons / pxMicrons));
         double effectiveStepMicrons = stridePx * pxMicrons;
 
-        double imageWidthMicrons = server.getWidth() * pxMicrons;
-        double imageHeightMicrons = server.getHeight() * pxMicrons;
         VoxelGrid grid = VoxelGrid.cover(
                 domain.widthMicrons(),
                 domain.heightMicrons(),
                 effectiveStepMicrons,
-                imageWidthMicrons,
-                imageHeightMicrons,
-                domain.xMinPx() * pxMicrons,
-                domain.yMinPx() * pxMicrons,
                 origin
         );
 
