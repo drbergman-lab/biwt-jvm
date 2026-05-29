@@ -126,11 +126,15 @@ The build is two modules:
 - [x] 30 unit tests across `:core`: VoxelGrid (8), DomainDetector (8), SubstrateSampler (6), SubstrateCsvWriter (5), BiwtSampler (4)
 - [x] End-to-end validated on real H&E images (small and large) with sensible timing (~14 s for 6 substrates on 625 × 575 voxels)
 
+### Completed (post-v0.1.0)
+
+- [x] **Coordinate-origin radio** — wizard's parameters dialog lets the user pick image-center or image-top-left for the ABM (0, 0).
+- [x] **OD-sum channel** — added "Optical density sum" to the channel dropdown for RGB images.
+
 ### Planned (post-MVP)
 
-- [ ] **Coordinate-origin radio** — let the user pick image-center vs image-top-left vs user-defined origin from the wizard.
-- [ ] **OD-sum channel** — add "Optical Density Sum" to the channel dropdown for RGB images.
-- [ ] **Channel math** — user-defined per-channel formulas (linear combinations, log transforms, custom expressions).
+- [ ] **User-defined origin** — third option that prompts for (x₀, y₀) µm explicitly.
+- [ ] **Channel math** — user-defined per-channel formulas (linear combinations, log transforms, custom expressions). See PRD.md "Feature: Channel Math".
 - [ ] **Overlapping kernels** — separate window vs stride.
 - [ ] **3D / z-stack support** — sampling over multiple z-planes.
 - [ ] **Per-axis pixel sizes** — drop the square-pixel requirement.

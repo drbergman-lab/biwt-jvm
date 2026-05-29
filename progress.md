@@ -163,3 +163,77 @@ Next sessions queued:
 - task #13 — channel math design entry in PRD
 
 ---
+
+## Session: origin radio + OD-sum + channel-math PRD (2026-05-28, same day)
+
+### Goal
+
+Three loosely-coupled post-MVP deliverables in one pass:
+- Promote the deferred coordinate-origin radio into the wizard.
+- Add an "Optical density sum" channel — the first concrete pixel-math
+  channel transform.
+- Write a PRD section laying out the broader channel-math story.
+
+### Key design decisions
+
+**Combined step-size + origin dialog.**
+`Dialogs.showInputDialog(Double)` was fine when step size was the only
+parameter. Adding origin would have meant a second prompt, which feels
+choppy. Built a small custom `Stage` with the step-size `TextField` plus
+a `ToggleGroup` of two `RadioButton`s. Validation (positive number,
+parseable) happens inline with an error label so a bad value re-prompts
+without losing the radio selection. Default origin remains
+`IMAGE_CENTER` to match v0.1.0 behavior.
+
+**OD-sum as a `ColorTransform`, not a custom server.**
+`ColorTransform` has only three methods (`extractChannel`,
+`supportsImage`, `getName`). Plugging into the existing
+`TransformedServerBuilder.applyColorTransforms(...)` pipeline meant no
+new sampler code paths. The OD-sum transform sits next to the
+deconvolved channels in the channel list and is sampled exactly the
+same way as any built-in channel.
+
+**Epsilon = 1.0 (one quantization step on 8 bits).**
+Standard pick for OD calculations on 8-bit RGB. White pixels
+(value=255) → OD ≈ 0; pure-black pixels (value=0) → OD ≈ 2.41 per
+channel, capping the sum at ~7.24. Avoids `log(0)` without distorting
+the signal range for typical stained tissue.
+
+**Restricted to `server.isRGB()`.**
+The 255 normalization and 3-channel assumption are baked in. For
+fluorescence (variable bit depth, arbitrary channel count) OD-sum
+isn't well defined — `supportsImage` returns false there and the
+choice doesn't appear in the dropdown.
+
+**Channel-math PRD: hand-rolled recursive-descent parser over external libs.**
+Rejected GraalVM JS (~30 MB), JSR-223/Nashorn (gone in Java 17+), and
+external libs like `exp4j` / `mXparser`. A ~200 LOC recursive-descent
+parser in `:core` covers `+ - * / ^`, parens, and a fixed function
+list. Cleaner dependency surface, no transitive conflicts with whatever
+QuPath ships, and it lives next to the rest of the headless API.
+
+### Rejected approaches
+
+**Passing the radio choice through `Dialogs.showChoiceDialog` after the
+step-size input.** Two separate dialogs felt like a hack. Custom dialog
+is ~40 lines and looks like part of the wizard.
+
+**Adding OD-sum as a `createLinearCombinationChannelTransform` entry.**
+Doesn't include the logarithm — couldn't express the actual formula.
+Custom `ColorTransform` was the only path.
+
+### Tests added
+
+None for this session — the new OD-sum transform is exercised through
+the wizard's existing pipeline and validated visually by the user on
+test_data/. Adding a unit test against a hand-computed pixel would be
+worthwhile if we refactor it.
+
+### Status
+
+Origin radio (task #11) and OD-sum (task #12) implemented and built
+into a fresh shadow jar. Channel-math PRD section (task #13) added.
+`v0.1.0` tag stays at the previous commit; these changes accumulate
+toward a future `v0.2.0`.
+
+---

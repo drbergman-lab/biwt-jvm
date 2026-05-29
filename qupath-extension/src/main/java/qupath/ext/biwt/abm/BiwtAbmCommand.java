@@ -44,6 +44,7 @@ import qupath.lib.images.servers.ImageChannel;
 import qupath.lib.images.servers.ImageServer;
 import qupath.lib.images.servers.TransformedServerBuilder;
 import qupath.lib.gui.QuPathGUI;
+import qupath.ext.biwt.abm.transforms.OpticalDensitySumTransform;
 
 import java.awt.image.BufferedImage;
 import java.io.File;
@@ -82,6 +83,9 @@ public final class BiwtAbmCommand {
     private static final String TITLE = "BIWT";
     private static final double DEFAULT_STEP_MICRONS = 20.0;
     private static final CoordinateOrigin DEFAULT_ORIGIN = CoordinateOrigin.IMAGE_CENTER;
+
+    /** Step size in µm + the coordinate-origin convention the user picked. */
+    private record PlanInputs(double stepMicrons, CoordinateOrigin origin) {}
 
     private final QuPathGUI qupath;
     private final BiwtSampler sampler = BiwtSampler.create();
@@ -128,17 +132,12 @@ public final class BiwtAbmCommand {
     // ---------------- steps 2 & 3 (plan: step size + detect domain) ----------------
 
     private SamplingPlan planWithUser(ImageData<BufferedImage> imageData) {
-        Double stepMicrons = Dialogs.showInputDialog(TITLE,
-                "Voxel size in µm (single scalar for x and y):", DEFAULT_STEP_MICRONS);
-        if (stepMicrons == null) return null;
-        if (!(stepMicrons > 0)) {
-            Dialogs.showErrorMessage(TITLE, "Voxel size must be a positive number.");
-            return null;
-        }
+        PlanInputs inputs = promptForPlanInputs();
+        if (inputs == null) return null;
 
         try {
             return sampler.plan(imageData, DomainDetectionOptions.defaults(),
-                    stepMicrons, DEFAULT_ORIGIN);
+                    inputs.stepMicrons(), inputs.origin());
         } catch (AnnotationNotFoundException ann) {
             boolean useWholeImage = Dialogs.showYesNoDialog(TITLE,
                     "No annotation named 'abm_domain' was found.\n\n"
@@ -146,7 +145,7 @@ public final class BiwtAbmCommand {
             if (!useWholeImage) return null;
             try {
                 return sampler.plan(imageData, DomainDetectionOptions.wholeImageFallback(),
-                        stepMicrons, DEFAULT_ORIGIN);
+                        inputs.stepMicrons(), inputs.origin());
             } catch (DomainException e2) {
                 Dialogs.showErrorMessage(TITLE, e2.getMessage());
                 return null;
@@ -161,6 +160,82 @@ public final class BiwtAbmCommand {
             Dialogs.showErrorMessage(TITLE, d.getMessage());
             return null;
         }
+    }
+
+    /**
+     * Custom dialog asking for the step size (µm) and the coordinate-origin convention.
+     * Returns null on cancel. Validates that the step is positive before returning.
+     */
+    private PlanInputs promptForPlanInputs() {
+        var resultRef = new java.util.concurrent.atomic.AtomicReference<PlanInputs>(null);
+
+        Stage dialog = new Stage();
+        dialog.setTitle(TITLE + " — sampling parameters");
+        dialog.initOwner(qupath == null ? null : qupath.getStage());
+        dialog.initModality(Modality.APPLICATION_MODAL);
+
+        TextField stepField = new TextField(Double.toString(DEFAULT_STEP_MICRONS));
+        stepField.setPrefColumnCount(8);
+
+        javafx.scene.control.RadioButton centerRadio = new javafx.scene.control.RadioButton("Image center");
+        javafx.scene.control.RadioButton topLeftRadio = new javafx.scene.control.RadioButton("Image top-left");
+        javafx.scene.control.ToggleGroup originGroup = new javafx.scene.control.ToggleGroup();
+        centerRadio.setToggleGroup(originGroup);
+        topLeftRadio.setToggleGroup(originGroup);
+        if (DEFAULT_ORIGIN == CoordinateOrigin.IMAGE_TOP_LEFT) {
+            topLeftRadio.setSelected(true);
+        } else {
+            centerRadio.setSelected(true);
+        }
+        VBox originBox = new VBox(4, centerRadio, topLeftRadio);
+
+        GridPane form = new GridPane();
+        form.setHgap(10);
+        form.setVgap(10);
+        form.add(new Label("Voxel size (µm):"), 0, 0);
+        form.add(stepField, 1, 0);
+        form.add(new Label("ABM (0, 0) at:"), 0, 1);
+        form.add(originBox, 1, 1);
+
+        Button okButton = new Button("OK");
+        Button cancelButton = new Button("Cancel");
+        okButton.setDefaultButton(true);
+        cancelButton.setCancelButton(true);
+
+        Label warning = new Label();
+        warning.setStyle("-fx-text-fill: #cc0000;");
+
+        okButton.setOnAction(e -> {
+            String txt = stepField.getText().trim();
+            double step;
+            try {
+                step = Double.parseDouble(txt);
+            } catch (NumberFormatException nfe) {
+                warning.setText("Enter a number.");
+                return;
+            }
+            if (!(step > 0)) {
+                warning.setText("Voxel size must be positive.");
+                return;
+            }
+            CoordinateOrigin origin = topLeftRadio.isSelected()
+                    ? CoordinateOrigin.IMAGE_TOP_LEFT
+                    : CoordinateOrigin.IMAGE_CENTER;
+            resultRef.set(new PlanInputs(step, origin));
+            dialog.close();
+        });
+        cancelButton.setOnAction(e -> dialog.close());
+
+        HBox buttons = new HBox(10, cancelButton, okButton);
+        buttons.setAlignment(Pos.CENTER_RIGHT);
+
+        VBox root = new VBox(12, form, warning, buttons);
+        root.setPadding(new Insets(16));
+        dialog.setScene(new Scene(root));
+        dialog.setResizable(false);
+        dialog.showAndWait();
+
+        return resultRef.get();
     }
 
     // ---------------- step 4 (plan confirmation) ----------------
@@ -220,6 +295,12 @@ public final class BiwtAbmCommand {
                 transforms.add(ColorTransforms.createColorDeconvolvedChannel(stains, s));
                 choices.add(new ChannelChoice("Deconvolved: " + stainName, transforms.size() - 1));
             }
+        }
+
+        // Per-pixel math channels — first instance of the broader "channel math" feature.
+        if (raw.isRGB()) {
+            transforms.add(new OpticalDensitySumTransform());
+            choices.add(new ChannelChoice("Optical density sum", transforms.size() - 1));
         }
 
         ImageServer<BufferedImage> transformed = new TransformedServerBuilder(raw)

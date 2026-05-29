@@ -310,31 +310,111 @@ already supports both standard options; `VoxelGrid.cover` honors them.
 A user-defined origin would require a third option that prompts for
 `(x_origin, y_origin)` in µm and shifts the grid accordingly.
 
-### Optical Density Sum channel
+### Channel math — broader vision
 
-**Goal:** Add an "Optical Density Sum" entry to the channel dropdown for
-RGB images.
+> See the standalone **Feature: Channel Math** section below for the full
+> behavioral spec. The OD-sum channel that ships ahead of it is the
+> first concrete instance of this feature family.
 
-**Notes:** OD per channel is `-log10((value + ε) / max)`; the sum is over
-the three channels. Cannot be expressed via `createColorDeconvolvedChannel`
-or `createLinearCombinationChannelTransform` alone because of the logarithm.
-Likely implementation: a custom `ColorTransform` subtype, or a custom
-`ImageServer` transform that wraps `applyColorTransforms`.
+---
 
-### Channel math
+## Feature: Channel Math (planned)
 
-**Goal:** Let the user enter expressions (e.g. `0.5 * H - 0.3 * E + log(R)`)
-as the source for a substrate.
+**One-line description:** Let the user define a substrate as an arbitrary
+expression over the image's available channels.
 
-**Notes:** Needs an expression parser. Options:
-- A small custom mini-language (cheaper, more constrained).
-- A JSR-223 engine (Nashorn is gone in Java 17+; alternatives like GraalVM
-  JS exist but add a substantial dependency).
-- An existing math library (e.g. `exp4j`, `mXparser`).
+**Priority:** Planned (post-v0.1.0).
 
-UX: a text field in the substrate dialog when the user picks an "Expression…"
-channel choice. The expression's identifiers map to channel names available
-in the server.
+### Motivation
+
+The MVP supports raw channels and the three QuPath color-deconvolved
+channels (H / E / Residual). Real workflows also need:
+
+- **Optical density sum** — `-log10((R+ε)/255) + -log10((G+ε)/255) + -log10((B+ε)/255)`
+  (the "tissue thickness" proxy used in many digital pathology pipelines).
+  Ships as a built-in channel choice before general channel math is
+  available, because it has no parameters worth exposing.
+- **Linear combinations of deconvolved channels** —
+  e.g. `0.8 * Hematoxylin - 0.2 * Eosin` to weight cell-density signal
+  while subtracting some cytoplasm noise.
+- **Per-channel transforms with parameters** —
+  e.g. `log(R + 1)`, `clip(H, 0, 1.5)`, `(R - 50) / 200`.
+- **Multi-channel arithmetic** — e.g. ratios for two-stain experiments,
+  differences for change-detection.
+
+A general "type an expression" facility covers all of the above and lets
+the user explore without code changes.
+
+### Behavioral specification
+
+- The substrate dialog's channel dropdown gains an "Expression…" entry
+  (always present, regardless of image type).
+- Choosing it expands a text area where the user types a formula such as
+  `0.5 * H - 0.3 * E + R / 255`.
+- Identifiers in the expression bind to channel names available in the
+  current server:
+  - Raw channel names verbatim (case-insensitive match) — e.g. `R`, `G`,
+    `B`, `DAPI`, `FITC`.
+  - Deconvolved channel names — `H`, `E`, `Residual` for an H&E image.
+  - Built-in transforms: `OD_R`, `OD_G`, `OD_B`, `OD_sum`.
+- Supported operators: `+ - * / ^` and grouping with parentheses.
+- Supported functions: `log`, `log10`, `exp`, `sqrt`, `abs`, `min`, `max`,
+  `clip(value, lo, hi)`.
+- Expression compilation happens once at substrate-add time. Errors
+  (unknown identifier, malformed syntax, division by literal zero) become
+  inline warnings under the text area.
+- A "Preview…" button samples the expression at five user-selectable
+  pixels and shows the values, so the user can sanity-check before
+  committing.
+- The committed expression is stored as a string in the saved-state
+  (when project save lands) so subsequent runs reproduce the same result.
+
+### Implementation approach
+
+**Parser:** A small recursive-descent parser hand-rolled in `:core`. ~200
+LOC for the supported grammar. Rejected:
+
+- *JSR-223 (Nashorn).* Removed in Java 17+; not available on our toolchain.
+- *GraalVM JS.* ~30 MB dependency for a small feature; rejected.
+- *`exp4j`, `mXparser`, etc.* Light, but each adds an externally-versioned
+  dependency that QuPath users may already have transitive conflicts with.
+  Rolling our own avoids that and keeps the dependency surface clean.
+
+**Server wiring:** Implement `ChannelMathTransform implements ColorTransform`
+that takes the compiled expression + a name-to-band-index map. In
+`extractChannel`, evaluate the expression per pixel using cached per-band
+arrays (same pattern as `OpticalDensitySumTransform`).
+
+**Dependency on existing code:**
+
+- Builds on `OpticalDensitySumTransform` (task #12) — same `ColorTransform`
+  shape, same `applyColorTransforms` wiring.
+- Lives in `:core` so headless callers can `new ChannelMathTransform(expr)`
+  without the GUI. The GUI adds the text-area + Preview UX on top.
+
+### Acceptance criteria
+
+- Typing `0.5*H - 0.3*E` over an H&E image produces a single-channel
+  output whose values match the hand-computed combination at sampled
+  pixels.
+- An unknown identifier (`X`) shows "Unknown channel `X`" inline; the
+  Add button stays disabled.
+- `clip(H, 0, 1.5)` clamps negative-H pixels to 0 and high values to 1.5.
+- The committed substrate name + expression survives a round-trip through
+  the save-state once that lands.
+
+### Open questions
+
+- **Should expressions live in PRD's Project Save feature too?** When
+  save-state ships, we want to persist expressions alongside the simpler
+  channel-index substrates. Probably one polymorphic `Substrate` record
+  with two variants: indexed vs expression.
+- **Preview pixel picker.** Five fixed positions (corners + center) vs
+  user-clicked positions? Probably the latter, but it requires a click
+  callback on the QuPath viewer.
+- **Case-sensitivity.** QuPath channel names are case-sensitive in the
+  metadata but most users write them however; we'll match
+  case-insensitively but warn when an exact match isn't unique.
 
 ### Overlapping kernels
 
