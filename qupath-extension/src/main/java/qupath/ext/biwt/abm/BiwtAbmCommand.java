@@ -377,6 +377,7 @@ public final class BiwtAbmCommand {
 
         List<ChannelChoice> options = new ArrayList<>();
         Map<String, Function<BufferedImage, float[]>> extractors = new HashMap<>();
+        List<InsertableIdentifier> insertables = new ArrayList<>();
 
         // Raw channels — dropdown entries AND expression identifiers.
         for (int i = 0; i < rawChannels.size(); i++) {
@@ -388,10 +389,12 @@ public final class BiwtAbmCommand {
             options.add(new ChannelChoice(label, transform));
             int band = i;
             extractors.put(label, img -> ChannelMathTransform.readBand(img, band));
+            insertables.add(new InsertableIdentifier(label, label));
         }
 
         // Color deconvolution — dropdown entries (prefixed "Deconvolved:") and expression
-        // identifiers (raw stain name, plus common short aliases like H/E when present).
+        // identifiers. We register both the long stain name (resolves via typing) and the short
+        // alias (H/E) but only emit one consolidated button "Hematoxylin (H)" that inserts H.
         ColorDeconvolutionStains stains = imageData.getColorDeconvolutionStains();
         if (stains != null && isRgb) {
             for (int s = 1; s <= 3; s++) {
@@ -401,10 +404,13 @@ public final class BiwtAbmCommand {
                         ColorTransforms.createColorDeconvolvedChannel(stains, s);
                 options.add(new ChannelChoice("Deconvolved: " + stainName, transform));
                 extractors.put(stainName, img -> transform.extractChannel(raw, img, null));
-                // Standard short aliases for H&E. Skipped if they'd clash with an existing key.
+
                 String alias = shortAliasFor(stainName);
                 if (alias != null && !extractors.containsKey(alias)) {
                     extractors.put(alias, img -> transform.extractChannel(raw, img, null));
+                    insertables.add(new InsertableIdentifier(stainName + " (" + alias + ")", alias));
+                } else {
+                    insertables.add(new InsertableIdentifier(stainName, stainName));
                 }
             }
         }
@@ -416,12 +422,16 @@ public final class BiwtAbmCommand {
             extractors.put("OD_G", img -> ChannelMathTransform.readOpticalDensity(img, 1));
             extractors.put("OD_B", img -> ChannelMathTransform.readOpticalDensity(img, 2));
             extractors.put("OD_sum", img -> ChannelMathTransform.readOpticalDensitySum(img));
+            insertables.add(new InsertableIdentifier("OD_R", "OD_R"));
+            insertables.add(new InsertableIdentifier("OD_G", "OD_G"));
+            insertables.add(new InsertableIdentifier("OD_B", "OD_B"));
+            insertables.add(new InsertableIdentifier("OD_sum", "OD_sum"));
         }
 
         // Expression sentinel — always last in the dropdown.
         options.add(ChannelChoice.EXPRESSION);
 
-        return new ChannelSet(raw, options, extractors, isRgb);
+        return new ChannelSet(raw, options, extractors, insertables, isRgb);
     }
 
     /** Common short alias for an H&E stain name, or null if no obvious alias. */
@@ -565,15 +575,25 @@ public final class BiwtAbmCommand {
     }
 
     /**
-     * Everything the substrate dialog needs: the raw server (we build the sampling server from
-     * scratch at Finish, one channel per substrate), the dropdown options, and the per-identifier
-     * pixel extractors that an expression can reference.
+     * Everything the substrate dialog needs: the raw server, the dropdown options, the
+     * per-identifier pixel extractors an expression can reference, and a curated list of
+     * "click to insert" identifiers the expression palette renders as buttons.
+     *
+     * <p>{@code extractorsForExpression} is the resolution map — every identifier the user might
+     * legally type, including short aliases like {@code H}/{@code E} <em>and</em> their long
+     * stain-name equivalents. {@code insertables} is the user-facing palette — one entry per
+     * concept, with the long-name aliases consolidated into the short-name button to avoid
+     * duplicates (e.g. one button labelled {@code "Hematoxylin (H)"} that inserts {@code H}).
      */
     record ChannelSet(
             ImageServer<BufferedImage> rawServer,
             List<ChannelChoice> options,
             Map<String, Function<BufferedImage, float[]>> extractorsForExpression,
+            List<InsertableIdentifier> insertables,
             boolean rgb) {}
+
+    /** One palette button: the label the user sees and the text that gets inserted at the caret. */
+    record InsertableIdentifier(String displayLabel, String insertText) {}
 
     /** One committed substrate: name, its own {@link ColorTransforms.ColorTransform}, and a label for the list. */
     record CommittedSubstrate(String name, ColorTransforms.ColorTransform transform, String displayLabel) {}
@@ -612,23 +632,26 @@ public final class BiwtAbmCommand {
             Label expressionStatus = new Label();
             expressionStatus.setWrapText(true);
 
-            // Clickable "Insert" row of every identifier the user can reference. Inserts at the
-            // current cursor position so the user can build an expression without memorizing
-            // QuPath's stain names.
-            FlowPane insertRow = new FlowPane(6, 4);
-            Label insertHeader = new Label("Insert:");
-            insertHeader.setStyle("-fx-text-fill: #555;");
-            insertRow.getChildren().add(insertHeader);
-            for (String id : sortedIdentifiers(channelSet.extractorsForExpression().keySet())) {
-                Button b = new Button(id);
-                b.setStyle("-fx-font-size: 11; -fx-padding: 1 6 1 6;");
-                b.setFocusTraversable(false);
-                b.setOnAction(ev -> {
-                    int caret = expressionArea.getCaretPosition();
-                    expressionArea.insertText(caret, id);
-                    expressionArea.requestFocus();
-                });
-                insertRow.getChildren().add(b);
+            // Two palette rows: one for channel identifiers, one for built-in functions. Each
+            // button inserts at the current caret position; for function buttons the caret then
+            // jumps to the first argument slot so the user can keep typing.
+            FlowPane channelPalette = new FlowPane(6, 4);
+            Label channelHeader = new Label("Channels:");
+            channelHeader.setStyle("-fx-text-fill: #555;");
+            channelPalette.getChildren().add(channelHeader);
+            for (InsertableIdentifier ins : channelSet.insertables()) {
+                channelPalette.getChildren().add(
+                        makeInsertButton(expressionArea, ins.displayLabel(), ins.insertText(),
+                                ins.insertText().length()));
+            }
+
+            FlowPane functionPalette = new FlowPane(6, 4);
+            Label functionHeader = new Label("Functions:");
+            functionHeader.setStyle("-fx-text-fill: #555;");
+            functionPalette.getChildren().add(functionHeader);
+            for (FunctionInsert fn : FUNCTION_PALETTE) {
+                functionPalette.getChildren().add(
+                        makeInsertButton(expressionArea, fn.label(), fn.insertText(), fn.caretOffset()));
             }
 
             javafx.beans.binding.BooleanBinding isExpressionMode = Bindings.createBooleanBinding(
@@ -636,8 +659,10 @@ public final class BiwtAbmCommand {
                     channelBox.valueProperty());
             expressionArea.visibleProperty().bind(isExpressionMode);
             expressionArea.managedProperty().bind(isExpressionMode);
-            insertRow.visibleProperty().bind(isExpressionMode);
-            insertRow.managedProperty().bind(isExpressionMode);
+            channelPalette.visibleProperty().bind(isExpressionMode);
+            channelPalette.managedProperty().bind(isExpressionMode);
+            functionPalette.visibleProperty().bind(isExpressionMode);
+            functionPalette.managedProperty().bind(isExpressionMode);
             expressionStatus.visibleProperty().bind(isExpressionMode);
             expressionStatus.managedProperty().bind(isExpressionMode);
 
@@ -734,13 +759,16 @@ public final class BiwtAbmCommand {
             form.add(new Label("Expression:"), 0, 2);
             form.add(expressionArea, 1, 2);
             form.add(new Label(""), 0, 3);
-            form.add(insertRow, 1, 3);
+            form.add(channelPalette, 1, 3);
             form.add(new Label(""), 0, 4);
-            form.add(expressionStatus, 1, 4);
+            form.add(functionPalette, 1, 4);
+            form.add(new Label(""), 0, 5);
+            form.add(expressionStatus, 1, 5);
             GridPane.setHgrow(nameRow, Priority.ALWAYS);
             GridPane.setHgrow(channelBox, Priority.ALWAYS);
             GridPane.setHgrow(expressionArea, Priority.ALWAYS);
-            GridPane.setHgrow(insertRow, Priority.ALWAYS);
+            GridPane.setHgrow(channelPalette, Priority.ALWAYS);
+            GridPane.setHgrow(functionPalette, Priority.ALWAYS);
 
             HBox buttons = new HBox(10, addButton, finishButton, cancelButton);
             buttons.setAlignment(Pos.CENTER_RIGHT);
@@ -821,25 +849,40 @@ public final class BiwtAbmCommand {
         }
 
         /**
-         * Stable ordering for the Insert palette: raw channels (single-letter R/G/B first),
-         * then deconvolved short aliases (H/E), then long stain names, then OD aliases.
-         * Within each bucket, alphabetical.
+         * Build a small palette button. {@code caretAdvance} is how far past the original caret
+         * position the cursor should land after insertion — equal to {@code insertText.length()}
+         * for plain identifier inserts (cursor at the end), or pointing inside the parens for
+         * function inserts so the user can keep typing.
          */
-        private static List<String> sortedIdentifiers(java.util.Set<String> keys) {
-            List<String> sorted = new ArrayList<>(keys);
-            sorted.sort((a, b) -> {
-                int ba = bucket(a), bb = bucket(b);
-                if (ba != bb) return Integer.compare(ba, bb);
-                return a.compareToIgnoreCase(b);
+        private static Button makeInsertButton(TextArea target, String label,
+                                               String insertText, int caretAdvance) {
+            Button b = new Button(label);
+            // '_' in a Button label is otherwise consumed as the mnemonic-accelerator marker on
+            // some platforms (so 'OD_R' would render as 'ODR'). Disable that interpretation.
+            b.setMnemonicParsing(false);
+            b.setStyle("-fx-font-size: 11; -fx-padding: 1 6 1 6;");
+            b.setFocusTraversable(false);
+            b.setOnAction(ev -> {
+                int caret = target.getCaretPosition();
+                target.insertText(caret, insertText);
+                target.positionCaret(caret + caretAdvance);
+                target.requestFocus();
             });
-            return sorted;
-        }
-
-        private static int bucket(String id) {
-            if (id.length() == 1) return 0;                 // R, G, B, H, E
-            if (id.startsWith("OD_") || id.equals("OD_sum")) return 3;
-            // Long stain names (Hematoxylin, Eosin, Residual, DAPI, …) and multi-letter channel names.
-            return 2;
+            return b;
         }
     }
+
+    /** Built-in functions surfaced in the expression palette. Order matches the PRD listing. */
+    private record FunctionInsert(String label, String insertText, int caretOffset) {}
+
+    private static final List<FunctionInsert> FUNCTION_PALETTE = List.of(
+            new FunctionInsert("log(_)",       "log()",     4),
+            new FunctionInsert("log10(_)",     "log10()",   6),
+            new FunctionInsert("exp(_)",       "exp()",     4),
+            new FunctionInsert("sqrt(_)",      "sqrt()",    5),
+            new FunctionInsert("abs(_)",       "abs()",     4),
+            new FunctionInsert("min(_, _)",    "min(, )",   4),
+            new FunctionInsert("max(_, _)",    "max(, )",   4),
+            new FunctionInsert("clip(_, _, _)","clip(, , )", 5)
+    );
 }
