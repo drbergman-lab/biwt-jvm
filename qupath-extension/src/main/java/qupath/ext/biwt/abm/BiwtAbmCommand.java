@@ -265,19 +265,22 @@ public final class BiwtAbmCommand {
         double H = canvas.getHeight();
         g.clearRect(0, 0, W, H);
 
-        // ABM domain rectangle (light fill, gray border).
+        // ABM domain rectangle (light fill, gray border). Extra top padding leaves room for the
+        // "ABM domain" caption above the rectangle so it can't be overrun by the (0, 0) marker
+        // when the user picks the top-left origin.
+        double topPad = 18;
         double pad = 12;
-        double rx = pad, ry = pad, rw = W - 2 * pad, rh = H - 2 * pad;
+        double rx = pad, ry = topPad, rw = W - 2 * pad, rh = H - topPad - pad;
         g.setFill(Color.gray(0.96));
         g.fillRect(rx, ry, rw, rh);
         g.setStroke(Color.gray(0.5));
         g.setLineWidth(1);
         g.strokeRect(rx, ry, rw, rh);
 
-        // "ABM domain" caption inside the rectangle, top-left, in muted gray.
+        // "ABM domain" caption just above the rectangle's top-left corner.
         g.setFill(Color.gray(0.45));
         g.setFont(Font.font(9));
-        g.fillText("ABM domain", rx + 4, ry + 11);
+        g.fillText("ABM domain", rx, ry - 4);
 
         // Dot at the origin location.
         double dotX, dotY;
