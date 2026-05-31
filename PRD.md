@@ -1,4 +1,4 @@
-# Product Requirements Document — qupath-extension-biwt
+# Product Requirements Document — biwt-jvm (BIWT, JVM implementation)
 
 > **Purpose:** This document defines the complete feature set of the BIWT
 > sampler in behavioral terms. It is the authoritative answer to *"what should

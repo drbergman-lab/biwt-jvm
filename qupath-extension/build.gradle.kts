@@ -8,7 +8,7 @@ plugins {
 qupathExtension {
     name = "qupath-extension-biwt"
     group = "io.github.drbergmanlab.biwt"
-    version = "0.1.0-SNAPSHOT"
+    version = "0.3.0"
     description = "BIWT — sample digital pathology images on a regular grid for ABM (PhysiCell) substrate initial conditions."
     automaticModule = "io.github.drbergmanlab.biwt.qupath"
 }

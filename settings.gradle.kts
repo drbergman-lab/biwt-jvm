@@ -7,7 +7,7 @@ pluginManagement {
     }
 }
 
-rootProject.name = "qupath-extension-biwt"
+rootProject.name = "biwt-jvm"
 
 include("core")
 include("qupath-extension")

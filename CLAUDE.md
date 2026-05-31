@@ -1,4 +1,4 @@
-# CLAUDE.md — qupath-extension-biwt
+# CLAUDE.md — biwt-jvm (BIWT, JVM implementation)
 
 ## About the User
 

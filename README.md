@@ -1,9 +1,18 @@
-# qupath-extension-biwt
+# BIWT — JVM implementation
 
-A QuPath extension that samples digital pathology images on a regular spatial grid
-and exports substrate concentration initial conditions for an agent-based model
-(primarily [PhysiCell](http://physicell.org)). Part of the **BIWT** (BioInformatics
-WalkThrough) framework.
+**BIWT** (BioInformatics WalkThrough) is a framework for bridging digital pathology
+data to agent-based models. This repository is the JVM-side implementation —
+a pure-Java core library plus a QuPath extension.
+
+This implementation samples digital pathology **images** on a regular spatial grid
+and exports **substrate concentration initial conditions** for an agent-based model
+(primarily [PhysiCell](http://physicell.org)).
+
+The Python implementation, which currently handles spatial-transcriptomics
+→ cell initial conditions, lives at
+[`drbergman-lab/biwt`](https://github.com/drbergman-lab/biwt). The two are
+sibling implementations of the same framework; functionality will converge
+over time. See each repo's README for what's currently implemented.
 
 The plugin reads pixel intensities from one or more image channels, averages each
 channel over non-overlapping square windows clipped to a user-defined annotation,
@@ -76,9 +85,9 @@ Requires JDK 17 or newer on PATH for the Gradle daemon. The build itself uses a
 toolchain-provisioned JDK 25 (downloaded automatically on first build).
 
 ```sh
-git clone https://github.com/<owner>/qupath-extension-biwt
-cd qupath-extension-biwt
-./gradlew :core:test                    # 30 unit tests in the core
+git clone https://github.com/drbergman-lab/biwt-jvm
+cd biwt-jvm
+./gradlew :core:test                    # 53 unit tests in the core
 ./gradlew :qupath-extension:shadowJar   # fat jar in qupath-extension/build/libs/
 ```
 

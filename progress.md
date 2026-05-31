@@ -1,4 +1,4 @@
-# progress.md — qupath-extension-biwt Session Journal
+# progress.md — biwt-jvm Session Journal
 
 > **Purpose:** Session-level decisions, rejected approaches, and open questions.
 > Unlike [PRD.md](PRD.md) (specification) and [README.md](README.md)

@@ -3,5 +3,5 @@
 
 allprojects {
     group = "io.github.drbergmanlab.biwt"
-    version = "0.1.0-SNAPSHOT"
+    version = "0.3.0"
 }
