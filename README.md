@@ -32,14 +32,25 @@ Coordinates are in µm; voxel centers follow PhysiCell's
 
 ### Install
 
-1. Download `qupath-extension-biwt-<version>-all.jar` from the
-   [Releases](../../releases) page.
-2. Drag the jar onto the running QuPath window. QuPath will copy it into
-   `~/QuPath/v0.7/extensions/` and prompt to restart.
-3. Confirm install via **Extensions → Installed extensions** — "BIWT" appears
-   in the list.
+Requires **QuPath 0.7.x**. Two install paths — pick whichever you prefer.
 
-Requires **QuPath 0.7.x**.
+#### Option A: via the drbergman-lab QuPath catalog (recommended)
+
+This route lets QuPath manage installs, updates, and uninstalls for every drbergman-lab extension from a single URL.
+
+1. In QuPath, open **Extensions → Manage extension catalogs** (exact wording varies slightly by QuPath build) and add this URL: `https://raw.githubusercontent.com/drbergman-lab/qupath-catalog/main/catalog.json`
+2. Open **Extensions → Manage extensions**. "BIWT" appears in the list with an Install button.
+3. Click Install. QuPath downloads the jar from this repo's GitHub release and prompts to restart.
+
+When a new BIWT release ships, the same Manage-extensions screen will offer an Update button — no manual download/replace required.
+
+#### Option B: manual jar install
+
+For one-off use or testing without configuring the catalog.
+
+1. Download `qupath-extension-biwt-<version>-all.jar` from the [Releases](../../releases) page.
+2. Drag the jar onto the running QuPath window. QuPath will copy it into `~/QuPath/v0.7/extensions/` and prompt to restart.
+3. Confirm install via **Extensions → Installed extensions** — "BIWT" appears in the list.
 
 ### Use (interactive)
 
