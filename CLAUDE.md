@@ -166,21 +166,83 @@ A feature is complete when **all** of:
 
 ## Publishing to QuPath users
 
-The three distribution channels in order of effort:
+Three distribution channels:
 
-1. **GitHub release.** `git push origin <tag>`, then create a release on GitHub
-   and attach `qupath-extension/build/libs/qupath-extension-biwt-<version>-all.jar`.
-   Users drag-drop the jar into QuPath.
-2. **QuPath extension catalog.** Open a PR against
-   [`qupath/qupath-catalog`](https://github.com/qupath/qupath-catalog) adding
-   an entry to its JSON manifest. Once merged, the extension appears in
-   QuPath's built-in Extensions → Manage extensions UI. The PR needs:
-   - extension name, description, author, license
-   - the release URL for the jar
-   - QuPath version compatibility
-   - homepage/source URL
+1. **GitHub release.** `git push origin main && git push origin <tag>`, then
+   create a GitHub release on this repo and attach
+   `qupath-extension/build/libs/qupath-extension-biwt-<version>-all.jar`. Users
+   can drag-drop the jar into QuPath manually.
+2. **QuPath catalog.** The polished path. The catalog manifest lives in a
+   **separate repo**: [`drbergman-lab/qupath-catalog`](https://github.com/drbergman-lab/qupath-catalog).
+   `qupath/qupath-catalog` is for QuPath-team extensions only; third parties
+   publish their own catalog and users add the URL via Extensions → Manage
+   extension catalogs. The published catalog URL is
+   `https://raw.githubusercontent.com/drbergman-lab/qupath-catalog/main/catalog.json`.
+   A new BIWT release isn't "done" until that catalog has the new entry —
+   see "Releasing a new version" below.
 3. **forum.image.sc announcement.** A post with the `qupath` tag under
    *Software Announcements*. Most ecosystem discovery happens there.
+
+## Releasing a new version
+
+Step-by-step for cutting a new release (replace `0.X.0` with the actual version).
+Steps in this repo come first; the catalog repo is last but **mandatory** for
+catalog users to see the new release.
+
+### In `biwt-jvm` (this repo)
+
+1. Bump `version` in **`qupath-extension/build.gradle.kts`** and the root
+   **`build.gradle.kts`** from the previous version to `0.X.0`. Both files,
+   same number.
+2. Update **`README.md`** Implementation Status (move shipped items into the
+   completed bucket; trim Planned).
+3. Update **`PRD.md`** if any behaviour changed since last release.
+4. Add a session entry to **`progress.md`** capturing the why behind any
+   non-obvious design decisions.
+5. Run the full suite: `./gradlew :core:test`. All tests must be green.
+6. Build the fat jar: `./gradlew :qupath-extension:shadowJar`. Result lives at
+   `qupath-extension/build/libs/qupath-extension-biwt-0.X.0-all.jar`.
+7. Commit, then tag: `git tag -a v0.X.0 -m "v0.X.0 — <one-line summary>"`.
+8. Push: `git push origin main && git push origin v0.X.0`.
+9. Draft a release note in
+   **`release-notes/v0.X.0.md`** following the format of `release-notes/v0.3.0.md`.
+   Make sure it makes sense to someone landing here without context.
+10. `gh release create v0.X.0 --repo drbergman-lab/biwt-jvm
+    qupath-extension/build/libs/qupath-extension-biwt-0.X.0-all.jar
+    --title "v0.X.0 — <one-line summary>"
+    --notes-file release-notes/v0.X.0.md`.
+11. Smoke-test the published release: download the jar from the public URL,
+    drop into QuPath, walk the wizard once on a known image, confirm the
+    output matches the previous release for an unchanged feature path.
+
+### In `drbergman-lab/qupath-catalog` (the catalog repo)
+
+12. Edit **`catalog.json`** in that repo: prepend a new release entry under the
+    BIWT extension's `releases` array. Newer first.
+    ```json
+    {
+        "name": "v0.X.0",
+        "main_url": "https://github.com/drbergman-lab/biwt-jvm/releases/download/v0.X.0/qupath-extension-biwt-0.X.0-all.jar",
+        "version_range": { "min": "v0.7.0" }
+    }
+    ```
+13. Validate before pushing:
+    ```sh
+    pip install git+https://github.com/qupath/extension-catalog-model
+    python -c "from extension_catalog_model.model import Catalog; \
+               Catalog.parse_file('catalog.json'); print('valid')"
+    ```
+    The validator hits `main_url` and `homepage` live to confirm 200 — so the
+    GitHub release from step 10 must already be published before this runs.
+14. Commit, push. The change is live to QuPath users at the catalog URL
+    immediately — QuPath refetches on each Manage-extensions open.
+
+### Optional post-release
+
+15. forum.image.sc post (once per significant release; usually `v0.3.0` style,
+    not every patch).
+16. Update the user's `README.md` in the catalog repo if the listed extensions
+    table needs adjustment.
 
 ## QuPath 0.7 API gotchas
 
