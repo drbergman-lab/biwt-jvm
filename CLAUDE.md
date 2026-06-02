@@ -45,7 +45,7 @@ is a thin caller of the same façade — anything the wizard does, a script can 
 
 ## Scope
 
-All work must remain inside this repository (`~/my_qupath_abm_plugin/`).
+All work must remain inside this repository (`~/biwt-jvm/`).
 Do not edit files elsewhere on the user's machine.
 
 ## Allowed / Cautioned commands
