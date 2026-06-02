@@ -1,5 +1,50 @@
 # progress.md — biwt-jvm Session Journal
 
+## Session: CI + transform tests (2026-06-01)
+
+### Goal
+
+Harden v0.3.0: add the two missing unit tests (the OD-sum and channel-math
+transforms were validated by eye, not by test) and stand up CI.
+
+### What shipped
+
+- `OpticalDensitySumTransformTest` (6) and `ChannelMathTransformTest` (7) in a
+  new `qupath-extension/src/test` source set. Both transforms ignore the
+  `ImageServer` arg of `extractChannel`, so tests construct a small
+  `BufferedImage` (TYPE_INT_RGB, `setRGB`) and pass `null` for the server —
+  no GUI or real server needed. The channel-math test also pins that
+  `readOpticalDensitySum` agrees with the standalone `OpticalDensitySumTransform`
+  (they share the OD formula) and that `OD_sum` works as an expression identifier.
+- `.github/workflows/ci.yml` — runs `./gradlew test` (both modules, 66 tests)
+  on push/PR to main + manual dispatch. Uploads test reports on failure.
+
+### Key decisions
+
+- **CI installs JDK 25 directly via `setup-java`** rather than relying on the
+  foojay toolchain download. QuPath 0.7.0 JARs need 25; installing it means
+  Gradle both launches on it and satisfies the toolchain spec, skipping the
+  per-run foojay fetch.
+- **`:qupath-extension` test setup mirrors `:core`'s fix** — needs the explicit
+  `testRuntimeOnly("org.junit.platform:junit-platform-launcher")` and
+  `tasks.test { useJUnitPlatform() }`; the `qupath-conventions` plugin doesn't
+  bring the launcher transitively (same gotcha that bit `:core` originally).
+- **CI runs `test`, not `build`.** Tests catch logic regressions cheaply;
+  building the shadow jar would pull the full QuPath GUI dependency tree on
+  every run for marginal extra coverage. Packaging regressions (like the
+  shadow-vs-implementation bug) are rare and caught at release time by the
+  smoke test.
+
+### Status
+
+66 tests green locally. `.github/workflows/ci.yml` will run on first push;
+README carries a CI badge. No version bump — this is test/infra only, folds
+into the next release. (Release notes are GitHub-only, not committed —
+`release-notes/` is gitignored for local drafts.)
+
+---
+
+
 > **Purpose:** Session-level decisions, rejected approaches, and open questions.
 > Unlike [PRD.md](PRD.md) (specification) and [README.md](README.md)
 > (completion status), this file captures the *reasoning* behind decisions —

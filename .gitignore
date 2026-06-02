@@ -38,4 +38,7 @@ test_data/*
 # Local design / brainstorming docs not meant for the repo
 my_qupath_plugin_context.html
 substrates.csv
+
+# Release notes live on the GitHub release, not in the repo. Keep local drafts here untracked.
+release-notes/
 *.log

@@ -1,5 +1,7 @@
 # BIWT — JVM implementation
 
+[![CI](https://github.com/drbergman-lab/biwt-jvm/actions/workflows/ci.yml/badge.svg)](https://github.com/drbergman-lab/biwt-jvm/actions/workflows/ci.yml)
+
 **BIWT** (BioInformatics WalkThrough) is a framework for bridging digital pathology
 data to agent-based models. This repository is the JVM-side implementation —
 a pure-Java core library plus a QuPath extension.
@@ -147,18 +149,19 @@ The build is two modules:
 - [x] Channel dropdown surfaces raw channels plus color-deconvolution (H / E / Residual) when stains are defined
 - [x] Parallel sampling — N workers driven by `ExecutorService`; CSV column order preserves user submission order
 - [x] Non-modal progress dialog with determinate progress bar bound to a JavaFX `Task`
-- [x] 30 unit tests across `:core`: VoxelGrid (8), DomainDetector (8), SubstrateSampler (6), SubstrateCsvWriter (5), BiwtSampler (4)
 - [x] End-to-end validated on real H&E images (small and large) with sensible timing (~14 s for 6 substrates on 625 × 575 voxels)
 
 ### Completed (post-v0.1.0)
 
 - [x] **Coordinate-origin radio** — wizard's parameters dialog lets the user pick ABM-domain center or ABM-domain top-left for the (0, 0) point, with a live preview canvas showing where the origin lands. The origin tracks the voxel grid (which is the ABM domain), not the image — so it sits on the annotation no matter where the annotation sits on the slide.
 - [x] **OD-sum channel** — added "Optical density sum" to the channel dropdown for RGB images.
+- [x] **Channel math** — user-defined per-substrate expressions over the available channels (`+ - * / ^`, parentheses, and `log`/`log10`/`exp`/`sqrt`/`abs`/`min`/`max`/`clip`). Live validation, click-to-insert channel and function palettes. Hand-rolled recursive-descent parser in `:core`.
+- [x] **66 unit tests** — 53 in `:core` (VoxelGrid, DomainDetector, SubstrateSampler, SubstrateCsvWriter, BiwtSampler, channel-math parser + evaluation) and 13 in `:qupath-extension` (OpticalDensitySumTransform, ChannelMathTransform).
+- [x] **CI** — GitHub Actions runs the full test suite on every push and PR.
 
 ### Planned (post-MVP)
 
 - [ ] **User-defined origin** — third option that prompts for (x₀, y₀) µm explicitly.
-- [ ] **Channel math** — user-defined per-channel formulas (linear combinations, log transforms, custom expressions). See PRD.md "Feature: Channel Math".
 - [ ] **Overlapping kernels** — separate window vs stride.
 - [ ] **3D / z-stack support** — sampling over multiple z-planes.
 - [ ] **Per-axis pixel sizes** — drop the square-pixel requirement.

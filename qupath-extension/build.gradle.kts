@@ -25,4 +25,9 @@ dependencies {
 
     testImplementation(libs.bundles.qupath)
     testImplementation(libs.junit)
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+}
+
+tasks.test {
+    useJUnitPlatform()
 }

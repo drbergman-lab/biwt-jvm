@@ -204,13 +204,16 @@ catalog users to see the new release.
    `qupath-extension/build/libs/qupath-extension-biwt-0.X.0-all.jar`.
 7. Commit, then tag: `git tag -a v0.X.0 -m "v0.X.0 — <one-line summary>"`.
 8. Push: `git push origin main && git push origin v0.X.0`.
-9. Draft a release note in
-   **`release-notes/v0.X.0.md`** following the format of `release-notes/v0.3.0.md`.
-   Make sure it makes sense to someone landing here without context.
+9. Draft the release notes. These live **only on the GitHub release**, not in
+   the repo — write them in a scratch file (anywhere; `release-notes/` is
+   gitignored if you want a local home for them), then pass it to the next
+   step. Use full-width lines (no mid-paragraph wrapping), lead with "what is
+   this" so it reads for someone landing on the release page cold, and put the
+   catalog URL in a fenced code block so GitHub renders a copy button.
 10. `gh release create v0.X.0 --repo drbergman-lab/biwt-jvm
     qupath-extension/build/libs/qupath-extension-biwt-0.X.0-all.jar
     --title "v0.X.0 — <one-line summary>"
-    --notes-file release-notes/v0.X.0.md`.
+    --notes-file <scratch-notes-file>`.
 11. Smoke-test the published release: download the jar from the public URL,
     drop into QuPath, walk the wizard once on a known image, confirm the
     output matches the previous release for an unchanged feature path.
