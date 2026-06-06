@@ -112,6 +112,33 @@ class DomainDetectorTest {
         assertTrue(ex.getMessage().contains("calibration"), "got: " + ex.getMessage());
     }
 
+    @Test
+    void fromChosenAnnotationBuildsDomain() {
+        // GUI path: user picks a specific annotation (e.g. when abm_domain is absent or ambiguous).
+        ImageData<BufferedImage> data = makeImageData(100, 100, 0.5);
+        ROI roi = ROIs.createRectangleROI(10, 10, 60, 40, ImagePlane.getDefaultPlane());
+        PathObject ann = PathObjects.createAnnotationObject(roi);
+        ann.setName("region A");
+        data.getHierarchy().addObject(ann);
+
+        AbmDomain d = new DomainDetector().fromAnnotation(data, ann);
+
+        assertEquals("annotation 'region A'", d.sourceDescription());
+        assertEquals(10.0, d.xMinPx(), EPS);
+        assertEquals(70.0, d.xMaxPx(), EPS);
+        assertEquals(30.0, d.widthMicrons(), EPS);  // 60 px * 0.5
+        assertEquals(20.0, d.heightMicrons(), EPS); // 40 px * 0.5
+    }
+
+    @Test
+    void fromChosenAnnotationRejectsNonRectangle() {
+        ImageData<BufferedImage> data = makeImageData(100, 100, 1.0);
+        ROI ellipse = ROIs.createEllipseROI(10, 10, 60, 60, ImagePlane.getDefaultPlane());
+        PathObject ann = PathObjects.createAnnotationObject(ellipse);
+        assertThrows(NonRectangularDomainException.class,
+                () -> new DomainDetector().fromAnnotation(data, ann));
+    }
+
     // ---- helpers ----
 
     private static ImageData<BufferedImage> makeImageData(int width, int height, double pxSizeMicrons) {

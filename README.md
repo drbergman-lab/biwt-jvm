@@ -6,8 +6,10 @@
 data to agent-based models. This repository is the JVM-side implementation —
 a pure-Java core library plus a QuPath extension.
 
-This implementation samples digital pathology **images** on a regular spatial grid
-and exports **substrate concentration initial conditions** for an agent-based model
+This implementation builds PhysiCell initial conditions from digital pathology in
+two complementary ways: it samples **images** on a regular spatial grid to export
+**substrate concentration** fields, and it places **segmented, classified cells**
+as **cell initial conditions** — both in the same PhysiCell coordinate frame
 (primarily [PhysiCell](http://physicell.org)).
 
 The Python implementation, which currently handles spatial-transcriptomics
@@ -22,13 +24,15 @@ and writes a PhysiCell-compatible CSV:
 
 ```
 x,y,z,oxygen,ecm,...
--1190,1190,0,42.7,0.83
--1190,1170,0,41.9,0.85
+-1190,-1190,0,42.7,0.83
+-1170,-1190,0,41.9,0.85
 ...
 ```
 
-Coordinates are in µm; voxel centers follow PhysiCell's
-`x_start + (i+0.5)·dx` convention.
+Coordinates are in µm; voxel centers follow PhysiCell's mesh convention
+(`x_min + (i+0.5)·dx`, anchored at the domain's bottom-left corner), and rows are
+emitted in PhysiCell mesh order (bottom-left first, x inner, y bottom→top). A
+sidecar `<name>-physicell-domain.xml` carries the matching `<domain>` bounds.
 
 ## Quick start
 
@@ -60,14 +64,22 @@ For one-off use or testing without configuring the catalog.
 
 ### Use (interactive)
 
-1. Open an image.
-2. Verify pixel calibration is set (Image tab → Properties).
-3. *(Optional)* Draw an axis-aligned rectangle and name it `abm_domain`.
-4. **Extensions → BIWT → Sample substrates…** and follow the wizard:
-   - Voxel size in µm.
-   - Plan confirmation (shows `nx × ny` and the effective step).
-   - Define substrates — name + channel (raw or color-deconvolved).
-   - Save the CSV.
+1. Open an image; verify pixel calibration is set (Image tab → Properties).
+2. *(Optional)* Draw an axis-aligned rectangle and name it `abm_domain`. If you
+   don't, the wizard asks which annotation to use (or offers the whole image).
+3. For cells, segment + classify first (StarDist, Cellpose, InstanSeg, or
+   QuPath's built-in cell detection) so the detections carry a class.
+4. **Extensions → BIWT → Build initial conditions…** — the one-stop wizard:
+   - Choose substrates, cells, or both; voxel size in µm.
+   - Confirm — shows `nx × ny`, the effective step, and the PhysiCell domain bounds.
+   - Define substrates (Channel or Expression per substrate) if building them.
+   - Pick an output folder + base name → writes `*-substrates.csv`,
+     `*-cells.csv`, and a `*-physicell-domain.xml` sidecar.
+   - Optionally point it at your PhysiCell config XML to rewrite its `<domain>`
+     to match (a `.bak` backup is kept).
+
+The focused **Sample substrates…** and **Place cells…** menu items do each half
+on its own; all three share the same annotation-center coordinate frame.
 
 ### Use (headless from a Groovy script)
 
@@ -85,12 +97,29 @@ def request = new SamplingRequest(
     getCurrentImageData(),
     DomainDetectionOptions.wholeImageFallback(),
     20.0,                                      // µm step size
-    CoordinateOrigin.IMAGE_CENTER,
+    CoordinateOrigin.ABM_DOMAIN_CENTER,
     [new SubstrateSpec("oxygen", 0),
      new SubstrateSpec("ecm",    1)]
 )
 def result = BiwtSampler.create().run(request)
 result.writeCsv(Path.of(System.getProperty("user.home"), "substrates.csv"))
+```
+
+And to place cells (after segmenting + classifying in QuPath):
+
+```groovy
+import io.github.drbergmanlab.biwt.core.BiwtCellPlacer
+import io.github.drbergmanlab.biwt.core.cells.CellPlacementOptions
+import io.github.drbergmanlab.biwt.core.coord.CoordinateOrigin
+import io.github.drbergmanlab.biwt.core.domain.DomainDetectionOptions
+import java.nio.file.Path
+
+def result = BiwtCellPlacer.create().run(
+    getCurrentImageData(),
+    DomainDetectionOptions.wholeImageFallback(),
+    CoordinateOrigin.ABM_DOMAIN_CENTER,
+    CellPlacementOptions.defaults().withVolume(true))   // x,y,z,type,volume
+result.writeCsv(Path.of(System.getProperty("user.home"), "cells.csv"))
 ```
 
 A complete example with input expansion lives at
@@ -104,7 +133,7 @@ toolchain-provisioned JDK 25 (downloaded automatically on first build).
 ```sh
 git clone https://github.com/drbergman-lab/biwt-jvm
 cd biwt-jvm
-./gradlew :core:test                    # 53 unit tests in the core
+./gradlew :core:test                    # 78 unit tests in the core
 ./gradlew :qupath-extension:shadowJar   # fat jar in qupath-extension/build/libs/
 ```
 
@@ -153,11 +182,21 @@ The build is two modules:
 
 ### Completed (post-v0.1.0)
 
-- [x] **Coordinate-origin radio** — wizard's parameters dialog lets the user pick ABM-domain center or ABM-domain top-left for the (0, 0) point, with a live preview canvas showing where the origin lands. The origin tracks the voxel grid (which is the ABM domain), not the image — so it sits on the annotation no matter where the annotation sits on the slide.
 - [x] **OD-sum channel** — added "Optical density sum" to the channel dropdown for RGB images.
 - [x] **Channel math** — user-defined per-substrate expressions over the available channels (`+ - * / ^`, parentheses, and `log`/`log10`/`exp`/`sqrt`/`abs`/`min`/`max`/`clip`). Live validation, click-to-insert channel and function palettes. Hand-rolled recursive-descent parser in `:core`.
-- [x] **66 unit tests** — 53 in `:core` (VoxelGrid, DomainDetector, SubstrateSampler, SubstrateCsvWriter, BiwtSampler, channel-math parser + evaluation) and 13 in `:qupath-extension` (OpticalDensitySumTransform, ChannelMathTransform).
+- [x] **PhysiCell-exact mesh frame** — the voxel grid and sampler are anchored at the annotation's bottom-left corner and discretized exactly like a PhysiCell `Cartesian_Mesh` (`min + (k+0.5)·d`, bottom→top). The CSV is written in PhysiCell mesh order so it loads voxel-for-voxel whether read by coordinate or positionally.
+- [x] **PhysiCell domain-bounds readout** — `PhysiCellDomain` derives `x_min…z_max, dx, dy, dz` from the grid (2D z-slice). The wizard shows the bounds in the plan dialog and writes a paste-ready `<domain>` XML sidecar next to the CSV on save.
+- [x] **Cell placement export** — places segmented, classified cells (from StarDist / Cellpose / InstanSeg / built-in detection) as PhysiCell cell initial conditions. Centroids map through a shared `CoordinateTransform` (same frame as the substrate voxels), QuPath classifications become named cell types, cells outside the domain are clipped, and an optional `volume` column is derived from segmented area (equivalent-sphere). Headless `BiwtCellPlacer` + *Place cells…* wizard. CSV: `x,y,z,type[,volume]`.
 - [x] **CI** — GitHub Actions runs the full test suite on every push and PR.
+
+### Completed (v0.4.0 — unified initial-conditions flow)
+
+- [x] **Combined "Build initial conditions…" wizard** — produces substrates and/or cells in one pass over a single ABM domain + origin (so the two exports always share the same frame), with one folder + base-name "Save outputs" step.
+- [x] **Center-only origin** — (0, 0) is fixed at the annotation center in the GUI; the top-left radio and origin-preview canvas are gone. `ABM_DOMAIN_TOP_LEFT` remains in the core enum for headless callers. The domain-bounds readout at confirmation is the transparency, not an editorialized note.
+- [x] **Domain selection / annotation picker** — when there's no `abm_domain`, the wizard offers the image's rectangle annotations (or whole image); when there are several, it asks which one. `DomainDetector.fromAnnotation` builds the domain from the chosen annotation.
+- [x] **Domain emitted from every method** — the cell export now writes a **bounds-only** `<domain>` sidecar (just `x_min/x_max/y_min/y_max`, leaving the user's voxel size alone); substrates write the full block.
+- [x] **PhysiCell config auto-patch** — every wizard offers to rewrite a chosen PhysiCell config's `<domain>` to match the export (`.bak` backup, attributes/comments preserved). `PhysiCellConfigUpdater` in `:core`.
+- [x] **91 unit tests** — 78 in `:core` (VoxelGrid, CoordinateTransform, DomainDetector, SubstrateSampler, SubstrateCsvWriter, BiwtSampler, PhysiCellDomain, PhysiCellConfigUpdater, CellExtractor, CellCsvWriter, channel-math) and 13 in `:qupath-extension`.
 
 ### Planned (post-MVP)
 

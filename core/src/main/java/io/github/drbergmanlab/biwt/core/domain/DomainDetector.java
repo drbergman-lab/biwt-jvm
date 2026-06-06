@@ -10,6 +10,7 @@ import qupath.lib.roi.interfaces.ROI;
 import java.awt.Rectangle;
 import java.awt.image.BufferedImage;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * Finds the ABM domain in a QuPath image — either an annotation with a specific name (default
@@ -21,14 +22,9 @@ public final class DomainDetector {
 
     public AbmDomain detect(ImageData<BufferedImage> imageData, DomainDetectionOptions opts) {
         ImageServer<BufferedImage> server = imageData.getServer();
-        PixelCalibration cal = server.getPixelCalibration();
-        double pxW = cal.getPixelWidthMicrons();
-        double pxH = cal.getPixelHeightMicrons();
-        if (!(pxW > 0) || !(pxH > 0) || Double.isNaN(pxW) || Double.isNaN(pxH)) {
-            throw new DomainException(
-                    "Image has no pixel-size calibration. Set the pixel size in µm under "
-                            + "'Image properties' before running BIWT.");
-        }
+        double[] px = pixelMicrons(server);
+        double pxW = px[0];
+        double pxH = px[1];
 
         List<PathObject> matches = imageData.getHierarchy().getAnnotationObjects().stream()
                 .filter(o -> opts.annotationName().equals(o.getName()))
@@ -47,28 +43,45 @@ public final class DomainDetector {
                     + "' found (" + matches.size() + "). Keep exactly one.");
         }
 
-        PathObject match = matches.get(0);
-        ROI roi = match.getROI();
-        if (!(roi instanceof RectangleROI)) {
-            String type = roi == null ? "null" : roi.getRoiName();
-            throw new NonRectangularDomainException(opts.annotationName(), type);
-        }
-
-        return fromAnnotation(opts.annotationName(), (RectangleROI) roi, pxW, pxH);
+        return fromAnnotation(imageData, matches.get(0));
     }
 
-    private static AbmDomain fromAnnotation(String name, RectangleROI roi,
-                                            double pxW, double pxH) {
-        double xMin = roi.getBoundsX();
-        double yMin = roi.getBoundsY();
-        double xMax = xMin + roi.getBoundsWidth();
-        double yMax = yMin + roi.getBoundsHeight();
+    /**
+     * Build the domain from a specific user-chosen annotation — used by the GUI when there is no
+     * {@code abm_domain} (offer to use another annotation) or more than one candidate (let the user
+     * pick which). The annotation must be an axis-aligned rectangle.
+     */
+    public AbmDomain fromAnnotation(ImageData<BufferedImage> imageData, PathObject annotation) {
+        Objects.requireNonNull(annotation, "annotation");
+        double[] px = pixelMicrons(imageData.getServer());
+        ROI roi = annotation.getROI();
+        String displayName = annotation.getName() == null || annotation.getName().isBlank()
+                ? "(unnamed)" : annotation.getName();
+        if (!(roi instanceof RectangleROI rect)) {
+            String type = roi == null ? "null" : roi.getRoiName();
+            throw new NonRectangularDomainException(displayName, type);
+        }
+        double xMin = rect.getBoundsX();
+        double yMin = rect.getBoundsY();
         return new AbmDomain(
-                "annotation '" + name + "'",
-                xMin, yMin, xMax, yMax,
-                pxW, pxH,
-                roi.getShape()
+                "annotation '" + displayName + "'",
+                xMin, yMin, xMin + rect.getBoundsWidth(), yMin + rect.getBoundsHeight(),
+                px[0], px[1],
+                rect.getShape()
         );
+    }
+
+    /** Pixel size in µm {@code {width, height}}; throws if the image has no calibration. */
+    private static double[] pixelMicrons(ImageServer<BufferedImage> server) {
+        PixelCalibration cal = server.getPixelCalibration();
+        double pxW = cal.getPixelWidthMicrons();
+        double pxH = cal.getPixelHeightMicrons();
+        if (!(pxW > 0) || !(pxH > 0) || Double.isNaN(pxW) || Double.isNaN(pxH)) {
+            throw new DomainException(
+                    "Image has no pixel-size calibration. Set the pixel size in µm under "
+                            + "'Image properties' before running BIWT.");
+        }
+        return new double[] {pxW, pxH};
     }
 
     private static AbmDomain fromWholeImage(ImageServer<BufferedImage> server, double pxW, double pxH) {

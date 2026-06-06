@@ -14,11 +14,12 @@ import java.util.Locale;
  *
  * <p>Schema: {@code x,y,z,substrate_1,substrate_2,...} with one row per voxel center.
  * Coordinates are in µm and follow the {@link VoxelGrid} convention (PhysiCell's
- * {@code x_start + (i+0.5)*dx}).
+ * {@code x_min + (i+0.5)*dx}).
  *
- * <p>For the 2D MVP, {@code z = 0} in every row. Row ordering iterates {@code j} (y)
- * as the outer loop and {@code i} (x) as the inner loop, matching common ABM
- * input-file conventions.
+ * <p>For the 2D MVP, {@code z = 0} in every row. Rows are emitted in <b>PhysiCell mesh order</b>:
+ * the bottom-left voxel first, x striding {@code x_min → x_max} as the inner loop, y striding
+ * {@code y_min → y_max} (bottom → top) as the outer loop. That matches how PhysiCell linearizes its
+ * voxels, so the file loads identically whether read by coordinate or positionally.
  */
 public final class SubstrateCsvWriter {
 
@@ -42,8 +43,8 @@ public final class SubstrateCsvWriter {
             w.write(header.toString());
             w.newLine();
 
-            for (int j = 0; j < grid.ny(); j++) {
-                double y = grid.yCenter(j);
+            for (int k = 0; k < grid.ny(); k++) {
+                double y = grid.yCenter(k);
                 for (int i = 0; i < grid.nx(); i++) {
                     double x = grid.xCenter(i);
                     StringBuilder row = new StringBuilder();
@@ -53,7 +54,7 @@ public final class SubstrateCsvWriter {
                     row.append(",0");
                     for (NamedSubstrate s : substrates) {
                         row.append(',');
-                        appendNumber(row, s.values()[j][i]);
+                        appendNumber(row, s.values()[k][i]);
                     }
                     w.write(row.toString());
                     w.newLine();

@@ -1,5 +1,258 @@
 # progress.md — biwt-jvm Session Journal
 
+## Session: v0.4.0 — unified initial-conditions flow (2026-06-06)
+
+### Goal
+
+Tie the two export methods together so users can't get the coordinate frame wrong, emit the
+PhysiCell domain from every path, and let the tool update the user's config directly. Keep it
+tight and intuitive.
+
+### Key design decisions
+
+**Center-only origin (GUI).** Dropped the center/top-left radio + origin-preview canvas from both
+dialogs; the GUI always uses annotation-center. `ABM_DOMAIN_TOP_LEFT` stays in the enum for
+headless callers. With one origin and one shared annotation, substrates and cells can't land in
+mismatched frames — most of the "idiot-proofing" falls out of removing the choice. Also dropped the
+explicit "(0,0) = center" note as too loud ("a smell"): the domain-bounds readout at confirmation
+is the honest, concrete transparency.
+
+**Cells emit a bounds-only domain.** Cells need no voxel size, so a cell export's domain is just the
+annotation's raw `x_min/x_max/y_min/y_max` (PhysiCellDomain.ofAnnotation, voxelSized=false).
+`domainTags()` then returns only those four, so the sidecar XML and the config patch touch only the
+x/y bounds — the user's `dx`/`dz`/`z` stay as they are. Substrates still emit the full voxel-sized
+domain. (When both run in the combined wizard, the full substrate domain is the one emitted.)
+
+**Config auto-patch via targeted text-splice, not DOM.** `PhysiCellConfigUpdater` rewrites the first
+`<domain>…</domain>` block's child values in place, preserving attributes (`units="micron"`),
+comments, indentation, and the rest of the file — a DOM round-trip would reformat the whole config,
+which users diff. Writes a `.bak` first. Iterates `PhysiCellDomain.domainTags()`, so a bounds-only
+domain naturally patches only x/y. Kept as a **post-export prompt** (not an in-dialog checkbox) to
+keep the parameter dialogs uncluttered — the user leaned checkbox but flagged busyness, and the
+prompt resolves exactly that.
+
+**Annotation picker.** `DomainDetector.fromAnnotation(imageData, chosen)` builds the domain from a
+user-selected annotation. The GUI (`WizardSupport.chooseDomain`) uses the single `abm_domain`
+directly when present, else shows a choice of the image's rectangle annotations + "whole image";
+with several `abm_domain` it asks which.
+
+**Core overloads for the GUI.** `BiwtSampler.plan(AbmDomain, step, origin)` and
+`BiwtCellPlacer.place(imageData, AbmDomain, origin, options)` let the wizard plan/place against an
+already-picked domain (the detection-based methods now delegate to these).
+
+**Combined wizard reuses, doesn't duplicate.** `BiwtBuildCommand` calls the existing
+`buildChannelSet` + `SubstrateDialog` (made package-accessible) and the core façades; one folder +
+base-name "Save outputs" dialog writes the (up to) three siblings. That single save dialog is the
+"ask the user" that gives both location control and predictable auto-named siblings.
+
+### Tests
+
+Core 78 (added PhysiCellConfigUpdater (5), bounds-only PhysiCellDomain, DomainDetector.fromAnnotation
+(2)); extension 13; 91 total, all green. The combined wizard / dialogs are GUI-only (verified by
+build + manual), consistent with the rest of the extension.
+
+### Status
+
+v0.4.0 feature work complete; version bumped. Remaining: real-image smoke test of the combined
+wizard + config-patch, then tag / GitHub release / catalog entry.
+
+---
+
+## Rejected approach: per-image substrate normalization (2026-06-04)
+
+Considered adding a per-substrate "clamp at the Nth percentile (e.g. 95th), then
+normalize and rescale to a target range." Rejected.
+
+**Why it's flawed.** A percentile computed *per image* normalizes each slide to its own
+distribution, so the same raw intensity maps to different exported values across the
+cohort — breaking the cross-image comparability that's usually the whole point of
+running one ABM over many slides. The "95th" is also a hyperparameter tuned by eye on a
+single image, with no guarantee it transfers; you'd only find out after running the
+cohort. And it doesn't stop there — admit a per-image auto-stat and the next asks
+(low+high percentiles, per-channel, robust estimators, then "make it consistent across
+images") grow a normalization subsystem inside what should be a coordinate bridge.
+
+**The line that keeps BIWT tight.** BIWT should compute only what depends on *the current
+image alone, deterministically*. A tuned per-image statistic violates that. Anything that
+must be *consistent across images* needs a shared reference — a cohort-level operation,
+out of per-image scope.
+
+**Honest alternatives (none adopted):**
+- *Downstream (recommended):* export raw; normalize across the set of CSVs in a small
+  post-processing script, where the whole cohort is in hand and comparability is
+  guaranteed.
+- *Fixed cohort-wide constant:* a user-supplied clamp/scale applied identically to every
+  image (deterministic, cohort-safe); a percentile could only ever *suggest* a value from
+  one image, never auto-commit it.
+- *Real cohort batch mode in BIWT:* sweep the dataset, compute one shared reference, apply
+  it — the correct in-tool version, but a substantially bigger feature.
+
+Decision: drop it for now; revisit only if the need sharpens, and then at cohort altitude.
+
+Note: BIWT's existing channel-math already offers a per-pixel `clip(value, lo, hi)` for
+*fixed-bound* clamping, which is deterministic and cohort-safe — distinct from the
+data-derived percentile clamp rejected here.
+
+---
+
+## Session: PhysiCell-frame correction (2026-06-04)
+
+### Goal
+
+Groundwork for cell-placement export (see next session) forced a hard look at the
+substrate coordinate frame. The discretization must match PhysiCell's mesh
+*exactly* so a user can paste domain bounds into their config and have cells and
+substrates land in the same voxels. This session corrects the frame; cell export
+builds on it.
+
+### The core realization (after several wrong turns)
+
+PhysiCell builds its mesh by **anchoring at the domain minimum corner** and
+striding up: `center(k) = min + (k+0.5)·d`, `k = 0` at the min, up to `max`. The
+domain is an integer number of voxels; when the step doesn't divide the
+annotation, the leftover is a partial voxel at the **far** (top/right) edges.
+
+The old code got two things wrong relative to this:
+
+1. **Y was top-anchored.** The sampler tiled pixel windows from the annotation
+   *top* (`yMinPx`) downward, and `VoxelGrid` pinned the grid *top* at the origin.
+   For a 410 µm tall annotation at 20 µm steps that produced y-centers
+   `{-10, -30, …, -410}` (overhang at the bottom). PhysiCell, anchored at the
+   bottom, wants `{-400, -380, …, 0}` (overhang at the top). These are **disjoint
+   sets** a half-step apart — not a reordering; the kernels aggregate different
+   pixels. (I initially, wrongly, claimed they were equivalent. They are not.)
+2. **CENTER centered the rounded grid, not the annotation.** Old CENTER used
+   `xStart = -gridW/2` (rounded). New CENTER uses `xMin = -annW/2` (actual), so
+   the **annotation** is centered on (0,0); the domain *bounds* then come out
+   mildly asymmetric on a non-dividing step (e.g. `x ∈ [-20.5, 39.5]`). The user
+   explicitly accepted this: "that's the cost of not having your domain
+   well-matched with your voxel size."
+
+### Key design decisions
+
+**One origin-agnostic discretization; origin only sets the anchor.** The
+algorithm is always "anchor at `(x_min, y_min)`, half-step in, stride to
+`(x_max, y_max)`." `CoordinateOrigin` only picks the numeric anchor:
+`TOP_LEFT → (0, -annH)`, `CENTER → (-annW/2, -annH/2)`. Nothing else in the
+math cares which it is. (User's framing — and it collapsed a lot of special-casing.)
+
+**`VoxelGrid` index `k` is now bottom-up (PhysiCell order), no flip in the grid.**
+Renamed fields `xStart/yStart → xMin/yMin`; `yCenter(k) = yMin + (k+0.5)·dy`.
+The image-row→math-y flip moved entirely into the **sampler**, which anchors its
+vertical windows at the annotation bottom (`yMaxPx`) so row `k = 0` averages the
+image's bottom rows. Added `xMax()/yMax()` accessors.
+
+**CSV rows now emitted in PhysiCell mesh order.** Bottom-left voxel first, x
+inner (`x_min → x_max`), y outer (bottom → top). Because the value array and the
+grid are both bottom-up now, the writer's existing `for k` loop produces this for
+free. Safe under both coordinate-matched and positional PhysiCell loaders.
+
+**Domain bounds are surfaced (`PhysiCellDomain`).** New record derived from the
+grid: `x_min…z_max, dx, dy, dz, nx, ny, nz`, with a 2D z-slice (`dz = dx`,
+`z ∈ [-dz/2, dz/2]`, `use_2D = true`). `toXml()` renders a paste-ready `<domain>`
+block; the wizard shows `summary()` in the plan dialog and writes a
+`*-physicell-domain.xml` sidecar next to the CSV on save. Chose a **sidecar**
+over an inline CSV comment so PhysiCell's numeric line parser isn't disturbed.
+
+### Tests
+
+- `VoxelGridTest`: rewrote the CENTER + y-axis tests for the new bottom-up,
+  annotation-anchored model; added `topLeftAnchorsBottomLeftCornerWithOverhangTopRight`
+  pinning the canonical 310×410 example (`x∈[0,320], y∈[-410,10]`, centers
+  `10…310` / `-400…0`).
+- `SubstrateCsvWriterTest`: `writesRowsInPhysiCellMeshOrderBottomUp` pins bottom-
+  first ascending-y output.
+- `BiwtSamplerTest`: end-to-end ground truth now `99 + 20i - 20k`; round-trip
+  coords bottom-up.
+- `SubstrateSamplerTest`: unchanged — its fixtures are uniform / column-gradient /
+  full-height-mask, so the vertical re-anchor doesn't move the assertions.
+- New `PhysiCellDomainTest` (3): bounds derivation, XML rendering, fractional bounds.
+
+Core 57 tests + extension 13 = 70, all green.
+
+### Status
+
+Part 1 (substrate frame) done. Part 2 (cell placement export) builds on the same
+anchor model + a shared pixel→µm transform. Docs (PRD/README) updated to match.
+
+---
+
+## Session: Cell placement export (2026-06-04, part 2)
+
+### Goal
+
+The main ask: initial cell placement for the ABM. User's workflow is
+segmentation → centroids → label type → export CSV, and they're happy leaning on
+existing QuPath tools. So BIWT is the **linker**, not a segmenter: it reads
+whatever detections exist (StarDist/Cellpose/InstanSeg/built-in), places them in
+the same frame the substrate export uses, and writes a PhysiCell cell-IC CSV.
+
+### Key design decisions
+
+**Shared `CoordinateTransform`, extracted from the anchor math.** Put the
+`(xMin, yMin)` computation on `CoordinateOrigin.minCornerMicrons(...)` as the
+single source of truth; both `VoxelGrid.cover` and the new `CoordinateTransform`
+read it, so cells and substrates are guaranteed to share the frame. The
+transform is the continuous affine pixel→µm map (with the y-flip); cells are
+placed at exact centroids (no voxel snapping). Pinned by a test that a cell on a
+voxel center gets that voxel's coordinates.
+
+**CSV format: headered, named types** (`x,y,z,type[,volume]`), per the user —
+`type` is the QuPath `PathClass` name and must match a PhysiCell
+`<cell_definition>`. `CellPlacementOptions.typeNameOverrides` allows a
+QuPath-class → PhysiCell-name remap (identity by default); the wizard doesn't
+expose the map yet.
+
+**Volume is an optional column** (user wanted it toggleable — "some users will
+use this, others discard it"). Equivalent-sphere from the segmented area:
+`r = sqrt(area/π)`, `V = (4/3)π r³`, area in µm² via per-axis calibration.
+
+**No square-pixel requirement for cells.** Unlike the substrate sampler (which
+needs square pixels for its single stride), the cell transform and the area→µm²
+conversion both honor per-axis calibration, so non-square pixels are fine.
+
+**Clip + unclassified handling.** Drop cells whose centroid is outside the domain
+clip mask (matches the substrate clip-to-annotation rule). Unclassified
+detections are dropped by default, or assigned a configurable type name.
+
+**Cell placement runs synchronously.** It's geometry only (centroids + areas, no
+pixel reads), so the wizard does it on the FX thread — no background Task needed,
+unlike substrate sampling.
+
+### Structure
+
+Mirrors the substrate side: façade `BiwtCellPlacer` + `CellPlacementResult` in
+core root; `CellRecord`, `CellExtractor`, `CellPlacementOptions` in `core.cells`;
+`CellCsvWriter` in `core.export`; `BiwtCellCommand` wizard +
+*Place cells…* menu item in the extension.
+
+### Tests (13 new, core 70 + ext 13 = 83 green)
+
+- `CoordinateTransformTest` (4): canonical (122,-133) placement + y-flip, center
+  offset, agreement with `VoxelGrid` at a voxel center, non-square pixels.
+- `CellExtractorTest` (5): placement + clip-drop + unclassified-drop, default
+  type assignment, volume-from-area, type-name override, the volume formula.
+- `CellCsvWriterTest` (4): headered named types, optional volume column, comma
+  escaping, empty-list rejection.
+
+### Open questions / future
+
+- **Type-mapping UI.** Headless `typeNameOverrides` exists; the wizard would need
+  a small QuPath-class → PhysiCell-name table to expose it. Deferred.
+- **Nucleus vs cell area for volume.** Currently uses the detection's main ROI
+  (cell boundary). Could add a nucleus-area option for cell objects.
+- **Cell-side domain bounds.** Cells share the substrate frame but don't define a
+  voxel step, so the `PhysiCellDomain` bounds come from the substrate run. A
+  cells-only user gets bounds by also running the (cheap) substrate plan, or sets
+  them from the annotation. Not surfaced in the cell wizard yet.
+
+### Status
+
+Part 2 complete. Headless `BiwtCellPlacer` + wizard, all tests green. PRD gains a
+Cell Placement Export feature; README Implementation Status updated.
+
+---
+
 ## Session: CI + transform tests (2026-06-01)
 
 ### Goal

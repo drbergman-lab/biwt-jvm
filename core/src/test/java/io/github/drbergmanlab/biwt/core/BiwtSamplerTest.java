@@ -29,8 +29,10 @@ class BiwtSamplerTest {
         // 100x100 image, pixel value = x + y, 0.5 µm/px.
         // abm_domain rectangle at (10, 10) size 80x80 px → 40x40 µm.
         // Request step size 10 µm → stridePx = 20 → 4x4 grid.
-        // For voxel (i, j): window in image-px is [10+20i, 10+20j] size 20x20.
-        //   Mean of (x+y) = (mean x) + (mean y) = (19.5 + 20i) + (19.5 + 20j) = 39 + 20(i+j)
+        // Windows are anchored at the annotation bottom-left (pixel (10,90)) and tiled up:
+        //   column i window x ∈ [10+20i, 30+20i) → mean x = 19.5 + 20i
+        //   row k (k=0 bottom) window y ∈ [70-20k, 90-20k) → mean y = 79.5 - 20k
+        //   value = mean x + mean y = 99 + 20i - 20k
         ImageData<BufferedImage> data = makeImageData(100, 100, 0.5, (x, y) -> x + y);
         ROI roi = ROIs.createRectangleROI(10, 10, 80, 80, ImagePlane.getDefaultPlane());
         PathObject ann = PathObjects.createAnnotationObject(roi);
@@ -53,10 +55,10 @@ class BiwtSamplerTest {
         assertEquals(4, result.grid().ny());
 
         double[][] vals = result.substrates().get(0).values();
-        for (int j = 0; j < 4; j++) {
+        for (int k = 0; k < 4; k++) {
             for (int i = 0; i < 4; i++) {
-                assertEquals(39.0 + 20.0 * (i + j), vals[j][i], EPS,
-                        "voxel (" + i + ", " + j + ")");
+                assertEquals(99.0 + 20.0 * i - 20.0 * k, vals[k][i], EPS,
+                        "voxel (i=" + i + ", k=" + k + ")");
             }
         }
     }
@@ -106,10 +108,11 @@ class BiwtSamplerTest {
 
         List<String> lines = Files.readAllLines(out);
         assertEquals("x,y,z,oxygen", lines.get(0));
-        // 2x2 grid with image-top-left origin (Q4): xCenter = 5, 15; yCenter(0) = -5, yCenter(1) = -15.
+        // 2x2 grid, top-left origin: xMin=0, yMin=-20. xCenter = 5, 15; yCenter(0) = -15 (bottom),
+        // yCenter(1) = -5 (top). Rows emitted bottom-up: first (5,-15), last (15,-5).
         assertEquals(5, lines.size());
-        assertTrue(lines.get(1).startsWith("5,-5,0,7"),    "got: " + lines.get(1));
-        assertTrue(lines.get(4).startsWith("15,-15,0,7"),  "got: " + lines.get(4));
+        assertTrue(lines.get(1).startsWith("5,-15,0,7"),  "got: " + lines.get(1));
+        assertTrue(lines.get(4).startsWith("15,-5,0,7"),  "got: " + lines.get(4));
     }
 
     @Test

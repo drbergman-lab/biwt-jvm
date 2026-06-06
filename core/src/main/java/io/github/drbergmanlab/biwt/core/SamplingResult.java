@@ -1,5 +1,6 @@
 package io.github.drbergmanlab.biwt.core;
 
+import io.github.drbergmanlab.biwt.core.coord.PhysiCellDomain;
 import io.github.drbergmanlab.biwt.core.coord.VoxelGrid;
 import io.github.drbergmanlab.biwt.core.domain.AbmDomain;
 import io.github.drbergmanlab.biwt.core.export.NamedSubstrate;
@@ -25,5 +26,10 @@ public record SamplingResult(
 ) {
     public void writeCsv(Path out) throws IOException {
         new SubstrateCsvWriter().write(out, grid, substrates);
+    }
+
+    /** The PhysiCell domain bounds implied by this result's grid (for the config XML). */
+    public PhysiCellDomain physiCellDomain() {
+        return PhysiCellDomain.of(grid);
     }
 }

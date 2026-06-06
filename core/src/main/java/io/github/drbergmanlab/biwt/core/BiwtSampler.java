@@ -67,11 +67,18 @@ public final class BiwtSampler {
                              DomainDetectionOptions domainOptions,
                              double requestedStepMicrons,
                              CoordinateOrigin origin) {
+        return plan(detector.detect(imageData, domainOptions), requestedStepMicrons, origin);
+    }
+
+    /**
+     * Plan against an already-resolved domain — used by the GUI after the user has picked which
+     * annotation defines the ABM domain. Same square-pixel and step-reconciliation rules as the
+     * detection-based {@link #plan(ImageData, DomainDetectionOptions, double, CoordinateOrigin)}.
+     */
+    public SamplingPlan plan(AbmDomain domain, double requestedStepMicrons, CoordinateOrigin origin) {
         if (!(requestedStepMicrons > 0)) {
             throw new IllegalArgumentException("requestedStepMicrons must be positive (got " + requestedStepMicrons + ")");
         }
-
-        AbmDomain domain = detector.detect(imageData, domainOptions);
 
         if (Math.abs(domain.pixelWidthMicrons() - domain.pixelHeightMicrons()) > SQUARE_PIXEL_TOLERANCE) {
             throw new DomainException("MVP requires square pixels; image has "

@@ -1,5 +1,6 @@
 package io.github.drbergmanlab.biwt.core;
 
+import io.github.drbergmanlab.biwt.core.coord.PhysiCellDomain;
 import io.github.drbergmanlab.biwt.core.coord.VoxelGrid;
 import io.github.drbergmanlab.biwt.core.domain.AbmDomain;
 import io.github.drbergmanlab.biwt.core.sampling.SamplingKernel;
@@ -20,4 +21,9 @@ public record SamplingPlan(
         SamplingKernel kernel,
         double requestedStepMicrons,
         double effectiveStepMicrons
-) {}
+) {
+    /** The PhysiCell domain bounds implied by this plan's grid (for the config XML). */
+    public PhysiCellDomain physiCellDomain() {
+        return PhysiCellDomain.of(grid);
+    }
+}

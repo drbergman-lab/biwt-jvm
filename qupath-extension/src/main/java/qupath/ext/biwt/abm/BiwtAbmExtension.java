@@ -13,7 +13,8 @@ public class BiwtAbmExtension implements QuPathExtension {
 
     private static final String EXTENSION_NAME = "BIWT";
     private static final String EXTENSION_DESCRIPTION =
-            "Sample digital pathology images on a regular grid and export substrate initial conditions for PhysiCell.";
+            "Bridge QuPath digital pathology to PhysiCell: sample images into substrate initial "
+                    + "conditions, and place segmented cells as cell initial conditions.";
     private static final Version EXTENSION_QUPATH_VERSION = Version.parse("v0.7.0");
 
     private boolean isInstalled = false;
@@ -27,9 +28,13 @@ public class BiwtAbmExtension implements QuPathExtension {
         isInstalled = true;
 
         var menu = qupath.getMenu("Extensions>" + EXTENSION_NAME, true);
+        MenuItem buildItem = new MenuItem("Build initial conditions…");
+        buildItem.setOnAction(e -> new BiwtBuildCommand(qupath).run());
         MenuItem sampleItem = new MenuItem("Sample substrates…");
         sampleItem.setOnAction(e -> new BiwtAbmCommand(qupath).run());
-        menu.getItems().add(sampleItem);
+        MenuItem cellsItem = new MenuItem("Place cells…");
+        cellsItem.setOnAction(e -> new BiwtCellCommand(qupath).run());
+        menu.getItems().addAll(buildItem, sampleItem, cellsItem);
     }
 
     @Override

@@ -7,11 +7,8 @@ import io.github.drbergmanlab.biwt.core.SubstrateSpec;
 import io.github.drbergmanlab.biwt.core.export.NamedSubstrate;
 import io.github.drbergmanlab.biwt.core.export.SubstrateCsvWriter;
 import io.github.drbergmanlab.biwt.core.coord.CoordinateOrigin;
-import io.github.drbergmanlab.biwt.core.domain.AnnotationNotFoundException;
-import io.github.drbergmanlab.biwt.core.domain.AskUserRequiredException;
-import io.github.drbergmanlab.biwt.core.domain.DomainDetectionOptions;
+import io.github.drbergmanlab.biwt.core.domain.AbmDomain;
 import io.github.drbergmanlab.biwt.core.domain.DomainException;
-import io.github.drbergmanlab.biwt.core.domain.NonRectangularDomainException;
 import javafx.application.Platform;
 import javafx.beans.binding.Bindings;
 import javafx.collections.FXCollections;
@@ -20,16 +17,16 @@ import javafx.concurrent.Task;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Scene;
-import javafx.scene.canvas.GraphicsContext;
-import javafx.scene.paint.Color;
-import javafx.scene.text.Font;
 import javafx.scene.control.Button;
 import javafx.scene.control.ChoiceBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.ListView;
 import javafx.scene.control.ProgressBar;
+import javafx.scene.control.RadioButton;
+import javafx.scene.control.ScrollPane;
 import javafx.scene.control.TextArea;
 import javafx.scene.control.TextField;
+import javafx.scene.control.ToggleGroup;
 import javafx.scene.layout.FlowPane;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
@@ -95,9 +92,7 @@ public final class BiwtAbmCommand {
 
     private static final String TITLE = "BIWT";
     private static final double DEFAULT_STEP_MICRONS = 20.0;
-    private static final CoordinateOrigin DEFAULT_ORIGIN = CoordinateOrigin.ABM_DOMAIN_CENTER;
-
-    /** Step size in µm + the coordinate-origin convention the user picked. */
+    /** Step size in µm + the coordinate-origin convention (always ABM-domain center for the GUI). */
     private record PlanInputs(double stepMicrons, CoordinateOrigin origin) {}
 
     private final QuPathGUI qupath;
@@ -162,28 +157,12 @@ public final class BiwtAbmCommand {
         PlanInputs inputs = promptForPlanInputs();
         if (inputs == null) return null;
 
+        AbmDomain domain = WizardSupport.chooseDomain(qupath, imageData, TITLE);
+        if (domain == null) return null;
+
         try {
-            return sampler.plan(imageData, DomainDetectionOptions.defaults(),
-                    inputs.stepMicrons(), inputs.origin());
-        } catch (AnnotationNotFoundException ann) {
-            boolean useWholeImage = Dialogs.showYesNoDialog(TITLE,
-                    "No annotation named 'abm_domain' was found.\n\n"
-                            + "Use the whole image as the ABM domain instead?");
-            if (!useWholeImage) return null;
-            try {
-                return sampler.plan(imageData, DomainDetectionOptions.wholeImageFallback(),
-                        inputs.stepMicrons(), inputs.origin());
-            } catch (DomainException e2) {
-                Dialogs.showErrorMessage(TITLE, e2.getMessage());
-                return null;
-            }
-        } catch (NonRectangularDomainException nr) {
-            Dialogs.showErrorMessage(TITLE, nr.getMessage());
-            return null;
-        } catch (AskUserRequiredException askEx) {
-            logger.warn("Unexpected ASK_USER signal from default options", askEx);
-            return null;
-        } catch (DomainException d) {
+            return sampler.plan(domain, inputs.stepMicrons(), inputs.origin());
+        } catch (DomainException d) {  // e.g. non-square pixels
             Dialogs.showErrorMessage(TITLE, d.getMessage());
             return null;
         }
@@ -204,39 +183,13 @@ public final class BiwtAbmCommand {
         TextField stepField = new TextField(Double.toString(DEFAULT_STEP_MICRONS));
         stepField.setPrefColumnCount(8);
 
-        javafx.scene.control.RadioButton centerRadio = new javafx.scene.control.RadioButton("ABM domain center");
-        javafx.scene.control.RadioButton topLeftRadio = new javafx.scene.control.RadioButton("ABM domain top-left");
-        javafx.scene.control.ToggleGroup originGroup = new javafx.scene.control.ToggleGroup();
-        centerRadio.setToggleGroup(originGroup);
-        topLeftRadio.setToggleGroup(originGroup);
-        if (DEFAULT_ORIGIN == CoordinateOrigin.ABM_DOMAIN_TOP_LEFT) {
-            topLeftRadio.setSelected(true);
-        } else {
-            centerRadio.setSelected(true);
-        }
-        // (The "ABM domain" wording is deliberate: the origin tracks the voxel grid — i.e. the
-        // annotation when one is defined — not the image as a whole. This matters when the
-        // annotation sits in a corner of the slide.)
-        VBox originBox = new VBox(4, centerRadio, topLeftRadio);
-
-        // Small canvas that draws the ABM domain and shows where (0, 0) lands for the
-        // current radio selection. Re-renders whenever the toggle changes.
-        javafx.scene.canvas.Canvas originPreview = new javafx.scene.canvas.Canvas(140, 100);
-        Runnable redrawPreview = () -> drawOriginPreview(originPreview,
-                topLeftRadio.isSelected() ? CoordinateOrigin.ABM_DOMAIN_TOP_LEFT : CoordinateOrigin.ABM_DOMAIN_CENTER);
-        redrawPreview.run();
-        originGroup.selectedToggleProperty().addListener((obs, oldT, newT) -> redrawPreview.run());
-
-        HBox originRow = new HBox(20, originBox, originPreview);
-        originRow.setAlignment(Pos.CENTER_LEFT);
-
+        // (0, 0) sits at the ABM-domain center; the plan-confirmation dialog shows the resulting
+        // domain bounds, which is the concrete, non-editorialized way to convey that.
         GridPane form = new GridPane();
         form.setHgap(10);
         form.setVgap(10);
         form.add(new Label("Voxel size (µm):"), 0, 0);
         form.add(stepField, 1, 0);
-        form.add(new Label("ABM (0, 0) at:"), 0, 1);
-        form.add(originRow, 1, 1);
 
         Button okButton = new Button("OK");
         Button cancelButton = new Button("Cancel");
@@ -259,10 +212,7 @@ public final class BiwtAbmCommand {
                 warning.setText("Voxel size must be positive.");
                 return;
             }
-            CoordinateOrigin origin = topLeftRadio.isSelected()
-                    ? CoordinateOrigin.ABM_DOMAIN_TOP_LEFT
-                    : CoordinateOrigin.ABM_DOMAIN_CENTER;
-            resultRef.set(new PlanInputs(step, origin));
+            resultRef.set(new PlanInputs(step, CoordinateOrigin.ABM_DOMAIN_CENTER));
             dialog.close();
         });
         cancelButton.setOnAction(e -> dialog.close());
@@ -279,63 +229,6 @@ public final class BiwtAbmCommand {
         return resultRef.get();
     }
 
-    /**
-     * Render a tiny "ABM domain" rectangle on the given canvas with a dot marking where (0, 0)
-     * lands for the chosen origin convention. Re-called whenever the radio selection changes.
-     */
-    private static void drawOriginPreview(javafx.scene.canvas.Canvas canvas, CoordinateOrigin origin) {
-        GraphicsContext g = canvas.getGraphicsContext2D();
-        double W = canvas.getWidth();
-        double H = canvas.getHeight();
-        g.clearRect(0, 0, W, H);
-
-        // ABM domain rectangle (light fill, gray border). Extra top padding leaves room for the
-        // "ABM domain" caption above the rectangle so it can't be overrun by the (0, 0) marker
-        // when the user picks the top-left origin.
-        double topPad = 18;
-        double pad = 12;
-        double rx = pad, ry = topPad, rw = W - 2 * pad, rh = H - topPad - pad;
-        g.setFill(Color.gray(0.96));
-        g.fillRect(rx, ry, rw, rh);
-        g.setStroke(Color.gray(0.5));
-        g.setLineWidth(1);
-        g.strokeRect(rx, ry, rw, rh);
-
-        // "ABM domain" caption just above the rectangle's top-left corner.
-        g.setFill(Color.gray(0.45));
-        g.setFont(Font.font(9));
-        g.fillText("ABM domain", rx, ry - 4);
-
-        // Dot at the origin location.
-        double dotX, dotY;
-        switch (origin) {
-            case ABM_DOMAIN_TOP_LEFT -> {
-                dotX = rx;
-                dotY = ry;
-            }
-            case ABM_DOMAIN_CENTER -> {
-                dotX = rx + rw / 2;
-                dotY = ry + rh / 2;
-            }
-            default -> {
-                dotX = rx + rw / 2;
-                dotY = ry + rh / 2;
-            }
-        }
-        double dotR = 4;
-        g.setFill(Color.CRIMSON);
-        g.fillOval(dotX - dotR, dotY - dotR, 2 * dotR, 2 * dotR);
-
-        // Label (0,0) — position so it stays inside the canvas for both layouts.
-        g.setFill(Color.BLACK);
-        g.setFont(Font.font(11));
-        if (origin == CoordinateOrigin.ABM_DOMAIN_TOP_LEFT) {
-            g.fillText("(0, 0)", dotX + 6, dotY + 14);
-        } else {
-            g.fillText("(0, 0)", dotX + 6, dotY + 4);
-        }
-    }
-
     // ---------------- step 4 (plan confirmation) ----------------
 
     private boolean confirmPlan(SamplingPlan plan) {
@@ -345,13 +238,15 @@ public final class BiwtAbmCommand {
                         + "Requested step: %.4g µm%n"
                         + "Effective step: %.4g µm%s%n"
                         + "Pixel size:     %.4g µm%n%n"
+                        + "PhysiCell domain (set these in your config XML):%n%s%n%n"
                         + "Proceed?",
                 plan.domain().sourceDescription(),
                 plan.grid().nx(), plan.grid().ny(),
                 plan.requestedStepMicrons(),
                 plan.effectiveStepMicrons(),
                 effectiveStepNote(plan),
-                plan.domain().pixelWidthMicrons());
+                plan.domain().pixelWidthMicrons(),
+                plan.physiCellDomain().summary());
         return Dialogs.showConfirmDialog(TITLE, message);
     }
 
@@ -370,7 +265,7 @@ public final class BiwtAbmCommand {
      * produces its channel values from the raw server; the sampling server is constructed at
      * Finish time, one channel per substrate.
      */
-    private static ChannelSet buildChannelSet(ImageData<BufferedImage> imageData) {
+    static ChannelSet buildChannelSet(ImageData<BufferedImage> imageData) {
         ImageServer<BufferedImage> raw = imageData.getServer();
         List<ImageChannel> rawChannels = raw.getMetadata().getChannels();
         boolean isRgb = raw.isRGB();
@@ -427,9 +322,6 @@ public final class BiwtAbmCommand {
             insertables.add(new InsertableIdentifier("OD_B", "OD_B"));
             insertables.add(new InsertableIdentifier("OD_sum", "OD_sum"));
         }
-
-        // Expression sentinel — always last in the dropdown.
-        options.add(ChannelChoice.EXPRESSION);
 
         return new ChannelSet(raw, options, extractors, insertables, isRgb);
     }
@@ -527,6 +419,7 @@ public final class BiwtAbmCommand {
 
                     updateMessage("Writing CSV…");
                     new SubstrateCsvWriter().write(outPath, plan.grid(), sampled);
+                    plan.physiCellDomain().writeXml(WizardSupport.domainSidecarPath(outPath));
                     return new SamplingResult(
                             plan.domain(), plan.grid(),
                             plan.requestedStepMicrons(), plan.effectiveStepMicrons(),
@@ -543,9 +436,11 @@ public final class BiwtAbmCommand {
             SamplingResult r = task.getValue();
             Dialogs.showInfoNotification(TITLE,
                     "Saved " + r.grid().nx() + " × " + r.grid().ny()
-                            + " voxels to " + outPath.getFileName());
+                            + " voxels to " + outPath.getFileName()
+                            + " (+ " + WizardSupport.domainSidecarPath(outPath).getFileName() + ")");
             logger.info("BIWT wrote {} ({} × {} voxels, {} substrate(s))",
                     outPath, r.grid().nx(), r.grid().ny(), r.substrates().size());
+            WizardSupport.offerConfigUpdate(qupath, TITLE, plan.physiCellDomain());
         });
         task.setOnFailed(e -> {
             progressStage.close();
@@ -564,14 +459,11 @@ public final class BiwtAbmCommand {
 
     /**
      * One row in the channel dropdown. {@code transform} is the {@link ColorTransforms.ColorTransform}
-     * that produces this channel's values from the raw server — or {@code null} for the sentinel
-     * "Expression…" option that triggers the expression editor instead.
+     * that produces this channel's values from the raw server. (Expression mode is a separate radio,
+     * not a dropdown entry.)
      */
     record ChannelChoice(String label, ColorTransforms.ColorTransform transform) {
         @Override public String toString() { return label; }
-
-        /** Sentinel option that opens the expression text area; {@code transform} is null. */
-        static final ChannelChoice EXPRESSION = new ChannelChoice("Expression…", null);
     }
 
     /**
@@ -602,9 +494,18 @@ public final class BiwtAbmCommand {
     record SubstrateChoices(List<CommittedSubstrate> substrates) {}
 
     /** Modal dialog: build a list of substrates with Add / Finish / Cancel / Remove. */
-    private static final class SubstrateDialog {
+    static final class SubstrateDialog {
 
         static SubstrateChoices show(Stage owner, ChannelSet channelSet) {
+            return show(owner, channelSet, false);
+        }
+
+        /**
+         * @param allowEmptyFinish when true, Finish works with zero substrates (returns an empty
+         *     list, distinct from a {@code null} cancel) — the combined wizard treats substrates as
+         *     optional. When false (substrate-only wizard), Finish requires at least one.
+         */
+        static SubstrateChoices show(Stage owner, ChannelSet channelSet, boolean allowEmptyFinish) {
             if (channelSet.options().isEmpty()) {
                 Dialogs.showErrorMessage(TITLE, "Image has no channels reported by its server.");
                 return null;
@@ -625,7 +526,18 @@ public final class BiwtAbmCommand {
             });
             channelBox.getSelectionModel().selectFirst();
 
-            // -------- expression editor (shown only when "Expression…" is picked) --------
+            // -------- source mode: a channel from the dropdown, or a typed expression --------
+            RadioButton channelModeRadio = new RadioButton("Channel");
+            RadioButton expressionModeRadio = new RadioButton("Expression");
+            ToggleGroup sourceModeGroup = new ToggleGroup();
+            channelModeRadio.setToggleGroup(sourceModeGroup);
+            expressionModeRadio.setToggleGroup(sourceModeGroup);
+            channelModeRadio.setSelected(true);
+            HBox sourceModeRow = new HBox(16, channelModeRadio, expressionModeRadio);
+            sourceModeRow.setAlignment(Pos.CENTER_LEFT);
+            javafx.beans.binding.BooleanExpression isExpressionMode = expressionModeRadio.selectedProperty();
+
+            // -------- expression editor (shown only in Expression mode) --------
             TextArea expressionArea = new TextArea();
             expressionArea.setPromptText("e.g. 0.5*H - 0.3*E + clip(R, 0, 200)");
             expressionArea.setPrefRowCount(2);
@@ -645,6 +557,16 @@ public final class BiwtAbmCommand {
                                 ins.insertText().length()));
             }
 
+            // Images can have many channels (tens or more). Keep the palette in a scroll box with a
+            // capped default height so it never pushes the rest of the form (and the buttons) off
+            // screen; the box grows when the user enlarges the resizable dialog.
+            ScrollPane channelScroll = new ScrollPane(channelPalette);
+            channelScroll.setFitToWidth(true);
+            channelScroll.setPrefViewportHeight(110);
+            channelScroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+            channelScroll.setVbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
+            channelScroll.setStyle("-fx-background-color: transparent;");
+
             FlowPane functionPalette = new FlowPane(6, 4);
             Label functionHeader = new Label("Functions:");
             functionHeader.setStyle("-fx-text-fill: #555;");
@@ -654,17 +576,8 @@ public final class BiwtAbmCommand {
                         makeInsertButton(expressionArea, fn.label(), fn.insertText(), fn.caretOffset()));
             }
 
-            javafx.beans.binding.BooleanBinding isExpressionMode = Bindings.createBooleanBinding(
-                    () -> channelBox.getValue() == ChannelChoice.EXPRESSION,
-                    channelBox.valueProperty());
-            expressionArea.visibleProperty().bind(isExpressionMode);
-            expressionArea.managedProperty().bind(isExpressionMode);
-            channelPalette.visibleProperty().bind(isExpressionMode);
-            channelPalette.managedProperty().bind(isExpressionMode);
-            functionPalette.visibleProperty().bind(isExpressionMode);
-            functionPalette.managedProperty().bind(isExpressionMode);
-            expressionStatus.visibleProperty().bind(isExpressionMode);
-            expressionStatus.managedProperty().bind(isExpressionMode);
+            // The channel dropdown vs the expression editor are shown/collapsed by source mode;
+            // those bindings live in the layout section below (where exprBox is assembled).
 
             javafx.beans.property.SimpleObjectProperty<Expression> compiledExpression =
                     new javafx.beans.property.SimpleObjectProperty<>(null);
@@ -695,8 +608,8 @@ public final class BiwtAbmCommand {
             };
             expressionArea.textProperty().addListener((obs, oldVal, newVal) -> revalidateExpression.run());
             // Re-validate when switching INTO expression mode (in case the user already typed text).
-            channelBox.valueProperty().addListener((obs, oldVal, newVal) -> {
-                if (newVal == ChannelChoice.EXPRESSION) revalidateExpression.run();
+            expressionModeRadio.selectedProperty().addListener((obs, was, now) -> {
+                if (now) revalidateExpression.run();
             });
 
             // -------- list + remove --------
@@ -734,10 +647,13 @@ public final class BiwtAbmCommand {
 
             addButton.disableProperty().bind(
                     nameField.textProperty().isEmpty()
-                            .or(channelBox.getSelectionModel().selectedItemProperty().isNull())
                             .or(nameAlreadyUsed)
+                            .or(isExpressionMode.not()
+                                    .and(channelBox.getSelectionModel().selectedItemProperty().isNull()))
                             .or(isExpressionMode.and(compiledExpression.isNull())));
-            finishButton.disableProperty().bind(Bindings.isEmpty(listItems));
+            if (!allowEmptyFinish) {
+                finishButton.disableProperty().bind(Bindings.isEmpty(listItems));
+            }
 
             // Enter in the name field commits the substrate, if Add is enabled.
             nameField.setOnAction(e -> {
@@ -749,26 +665,34 @@ public final class BiwtAbmCommand {
             HBox.setHgrow(nameField, Priority.ALWAYS);
             nameRow.setAlignment(Pos.CENTER_LEFT);
 
+            // Channel mode shows the dropdown; Expression mode shows the editor + palettes. Each
+            // input collapses (unmanaged) when the other mode is active, so the dialog stays compact.
+            Label channelLabel = new Label("Channel:");
+            channelLabel.visibleProperty().bind(isExpressionMode.not());
+            channelLabel.managedProperty().bind(isExpressionMode.not());
+            channelBox.visibleProperty().bind(isExpressionMode.not());
+            channelBox.managedProperty().bind(isExpressionMode.not());
+
+            VBox exprBox = new VBox(8,
+                    new Label("Expression:"), expressionArea, channelScroll, functionPalette, expressionStatus);
+            VBox.setVgrow(channelScroll, Priority.ALWAYS);
+            exprBox.visibleProperty().bind(isExpressionMode);
+            exprBox.managedProperty().bind(isExpressionMode);
+
             GridPane form = new GridPane();
             form.setHgap(8);
             form.setVgap(8);
             form.add(new Label("Name:"), 0, 0);
             form.add(nameRow, 1, 0);
-            form.add(new Label("Channel:"), 0, 1);
-            form.add(channelBox, 1, 1);
-            form.add(new Label("Expression:"), 0, 2);
-            form.add(expressionArea, 1, 2);
-            form.add(new Label(""), 0, 3);
-            form.add(channelPalette, 1, 3);
-            form.add(new Label(""), 0, 4);
-            form.add(functionPalette, 1, 4);
-            form.add(new Label(""), 0, 5);
-            form.add(expressionStatus, 1, 5);
+            form.add(new Label("Source:"), 0, 1);
+            form.add(sourceModeRow, 1, 1);
+            form.add(channelLabel, 0, 2);
+            form.add(channelBox, 1, 2);
+            form.add(exprBox, 0, 3, 2, 1);
             GridPane.setHgrow(nameRow, Priority.ALWAYS);
             GridPane.setHgrow(channelBox, Priority.ALWAYS);
-            GridPane.setHgrow(expressionArea, Priority.ALWAYS);
-            GridPane.setHgrow(channelPalette, Priority.ALWAYS);
-            GridPane.setHgrow(functionPalette, Priority.ALWAYS);
+            GridPane.setHgrow(exprBox, Priority.ALWAYS);
+            GridPane.setVgrow(exprBox, Priority.ALWAYS);
 
             HBox buttons = new HBox(10, addButton, finishButton, cancelButton);
             buttons.setAlignment(Pos.CENTER_RIGHT);
@@ -785,19 +709,24 @@ public final class BiwtAbmCommand {
                     buttons);
             root.setPadding(new Insets(15));
             root.setPrefWidth(460);
+            // Extra window height flows into the form, and from there into the channel-palette
+            // scroll box (the row marked vgrow), so enlarging the dialog shows more channels.
+            VBox.setVgrow(form, Priority.ALWAYS);
 
             Stage stage = new Stage();
             stage.setTitle("BIWT — define substrates");
             stage.initOwner(owner);
             stage.initModality(Modality.WINDOW_MODAL);
             stage.setScene(new Scene(root));
-            stage.setResizable(false);
+            stage.setResizable(true);
+            stage.setMinWidth(440);
+            stage.setMinHeight(380);
 
             addButton.setOnAction(e -> {
                 ChannelChoice choice = channelBox.getValue();
                 String name = nameField.getText().trim();
                 CommittedSubstrate cs;
-                if (choice == ChannelChoice.EXPRESSION) {
+                if (expressionModeRadio.isSelected()) {
                     Expression expr = compiledExpression.get();
                     if (expr == null) return;
                     Map<String, Function<BufferedImage, float[]>> exprExtractors = new HashMap<>();

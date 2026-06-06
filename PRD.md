@@ -99,27 +99,39 @@ ABM-µm coordinates using PhysiCell's voxel-center convention.
 
 **Behavioral specification:**
 
-- `VoxelGrid.cover(...)` returns the smallest integer-step-multiple grid
-  covering the annotation in each axis.
-- `xCenter(i) = xStart + (i + 0.5)·dx` (PhysiCell convention).
-- `yCenter(j) = yStart - (j + 0.5)·dy` — y is flipped because image rows go
-  top→bottom but math +y is up.
-- `CoordinateOrigin.ABM_DOMAIN_CENTER`: grid center maps to (0, 0).
-  Spans `[-W/2, +W/2] × [-H/2, +H/2]` in µm — the symmetric domain PhysiCell
-  expects, where `W` and `H` are the grid extent (not the image extent).
-- `CoordinateOrigin.ABM_DOMAIN_TOP_LEFT`: grid top-left maps to (0, 0); the
-  domain spans into the fourth quadrant (x ≥ 0, y ≤ 0).
+The grid is discretized **exactly like a PhysiCell `Cartesian_Mesh`**: anchor at
+the domain minimum corner `(x_min, y_min)`, step half a voxel in, then stride a
+full voxel until `(x_max, y_max)`. The algorithm is origin-agnostic — the origin
+only sets the numeric anchor.
 
-The origin tracks the **voxel grid**, not the image — so when an annotation
-is the domain, the (0, 0) point sits on the annotation no matter where it
-happens to be on the slide.
+- `VoxelGrid.cover(...)` returns the smallest integer-step-multiple grid covering
+  the annotation: `nx = ceil(annW/step)`, `ny = ceil(annH/step)`.
+- `xCenter(i) = xMin + (i + 0.5)·dx`, `i = 0…nx-1` left → right.
+- `yCenter(k) = yMin + (k + 0.5)·dy`, `k = 0…ny-1` **bottom → top** (PhysiCell
+  mesh index). The grid carries no y-flip; the image-row→math-y flip lives in the
+  sampler (it anchors windows at the annotation bottom so `k = 0` averages the
+  image's bottom rows).
+- `xMax = xMin + nx·dx`, `yMax = yMin + ny·dy`. The non-dividing overhang lands as
+  partial voxels at the **top and right** (far edges from the anchor).
+- `CoordinateOrigin.ABM_DOMAIN_TOP_LEFT`: the annotation's top-left corner is
+  (0, 0), so `xMin = 0`, `yMin = -annH`.
+- `CoordinateOrigin.ABM_DOMAIN_CENTER`: the **annotation** is centered on (0, 0),
+  so `xMin = -annW/2`, `yMin = -annH/2`. On a non-dividing step the domain
+  *bounds* are mildly asymmetric (one-sided overhang) even though the annotation
+  is centered — an accepted cost of a step that doesn't divide the domain.
+
+The anchor depends only on the annotation's size and the origin choice — never on
+where the annotation sits on the slide.
 
 **Acceptance criteria:**
 
-- Voxel j = 0 (image top) has the **largest** y; voxel j = ny − 1 has the smallest.
-- For an annotation 100 µm × 100 µm with dx = 20 µm and
-  `ABM_DOMAIN_CENTER`: 5 × 5 grid, centers at {-40, -20, 0, 20, 40} on each axis
-  — same symmetric output regardless of where the annotation sits on the slide.
+- Voxel `k = 0` (PhysiCell index 0, image bottom) has the **smallest** y;
+  `k = ny − 1` (image top) the largest.
+- Annotation 310 µm × 410 µm, step 20 µm, `ABM_DOMAIN_TOP_LEFT`: domain
+  `x ∈ [0, 320], y ∈ [-410, +10]`; x-centers `10, 30, …, 310`; y-centers
+  `-400, -380, …, 0`.
+- Annotation 60 µm × 60 µm, step 20 µm, `ABM_DOMAIN_CENTER`: 3 × 3 grid, centers
+  `{-20, 0, 20}` per axis (symmetric, because the step divides the annotation).
 
 ---
 
@@ -132,11 +144,14 @@ for each voxel.
 
 **Behavioral specification:**
 
-- For each voxel `(i, j)`, build a pixel-space window of size
-  `kernel.windowSizePx` starting at
-  `(domain.xMinPx + i·stride, domain.yMinPx + j·stride)`.
+- For each voxel `(i, k)`, build a pixel-space window of size
+  `kernel.windowSizePx`: x in `[domain.xMinPx + i·stride, …]`, y *ending* at
+  `domain.yMaxPx − k·stride`. Windows are anchored at the annotation's
+  **bottom-left** pixel corner and tiled right and up, so row `k = 0` sits on the
+  annotation bottom (this is where the image-row→math-y flip lives) and the
+  overhang lands at the top and right.
 - Clip the window to image bounds (the grid may overhang by up to
-  `stride − 1` pixels per side).
+  `stride − 1` pixels per far side).
 - Read the clipped tile via `ImageServer.readRegion` at downsample 1.0.
 - Intersect each pixel center with `domain.clipMaskPx`; average only the
   channel values for pixels inside the mask.
@@ -165,7 +180,9 @@ for each voxel.
 
 - Schema: `x,y,z,<name1>,<name2>,...` — coordinates in µm, `z = 0` for the 2D
   MVP, one row per voxel.
-- Iteration order: outer loop on `j`, inner on `i`.
+- Iteration order: **PhysiCell mesh order** — bottom-left voxel first, `i` (x)
+  inner (`x_min → x_max`), `k` (y) outer (`y_min → y_max`, bottom → top). Loads
+  identically whether PhysiCell reads by coordinate or positionally.
 - Numbers: integers printed without trailing zeros where possible;
   `NaN` for unknown values.
 - Throw `IllegalArgumentException` for mismatched dimensions or empty
@@ -176,8 +193,36 @@ for each voxel.
 - Header row matches the schema.
 - Row count = `nx · ny`.
 - Round-trip parse with a CSV library returns the same values.
-- Sample row matches a hand-computed expectation
-  (`5,5,0,7` for a 2 × 2 grid of uniform value 7 at the image-top-left origin).
+- First data row is the bottom-left voxel (smallest x, smallest y); the y column
+  is non-decreasing down the file.
+
+---
+
+## Feature: PhysiCell Domain Bounds Readout
+
+**One-line description:** Surface the exact PhysiCell domain bounds implied by the
+grid so the user can configure their simulation to match the export voxel-for-voxel.
+
+**Priority:** Must-have.
+
+**Behavioral specification:**
+
+- `PhysiCellDomain.of(grid)` derives `x_min, x_max, y_min, y_max, dx, dy` from the
+  voxel grid, plus a 2D z-slice: `dz = dx`, `z ∈ [-dz/2, +dz/2]`, `use_2D = true`,
+  `nz = 1`.
+- `toXml()` renders a paste-ready PhysiCell `<domain>` block (tab-indented).
+- `summary()` renders a compact human-readable form for a dialog.
+- `SamplingPlan.physiCellDomain()` / `SamplingResult.physiCellDomain()` expose it.
+- The wizard shows `summary()` in the plan-confirmation dialog and, on save,
+  writes a `<csv-basename>-physicell-domain.xml` sidecar next to the CSV. A
+  sidecar (not an inline CSV comment) keeps PhysiCell's numeric line parser clean.
+
+**Acceptance criteria:**
+
+- For the canonical 310 × 410 µm / 20 µm / top-left grid, the XML carries
+  `x_min 0, x_max 320, y_min -410, y_max 10, dx 20, use_2D true`.
+- Fractional/asymmetric bounds (center origin, non-dividing step) round-trip
+  without loss (e.g. `x_min -20.5`).
 
 ---
 
@@ -301,6 +346,112 @@ advantage of QuPath's tile cache.
 
 - Speedup ≥ 2× over sequential on N ≥ 4 substrates.
 - The CSV is unchanged from the sequential output.
+
+---
+
+## Feature: Cell Placement Export
+
+**One-line description:** Place segmented, classified cells as PhysiCell cell
+initial conditions, in the same coordinate frame as the substrate export.
+
+**Priority:** Must-have.
+
+**Behavioral specification:**
+
+BIWT links existing tools; it does not segment or classify. Segmentation comes
+from StarDist / Cellpose / InstanSeg / built-in cell detection, and cell types
+from QuPath classifications. BIWT reads the resulting detection hierarchy and:
+
+- `CoordinateTransform.of(domain, origin)` builds the continuous pixel→µm map
+  (same anchor as `VoxelGrid`, with the y-flip). Cells are placed at their exact
+  centroids — no voxel snapping — so a cell and a substrate voxel at the same
+  physical location share coordinates.
+- For each detection: centroid → µm; QuPath `PathClass` name → PhysiCell cell
+  type (identity, or via `CellPlacementOptions.typeNameOverrides`).
+- Cells whose centroid falls outside the domain clip mask are dropped.
+- Unclassified detections are dropped, or assigned a default type, per
+  `unclassifiedTypeName`.
+- When `includeVolume` is set, `volume` (µm³) is the equivalent-sphere volume of
+  the segmented area: `r = sqrt(area/π)`, `V = (4/3)π r³`.
+- `CellCsvWriter` writes a headered CSV with **named** types:
+  `x,y,z,type` (or `x,y,z,type,volume`). Type strings are CSV-escaped only when
+  needed. Order is irrelevant (a cell IC is an unordered point set).
+- `BiwtCellPlacer.create().run(imageData, domainOptions, origin, options)` is the
+  headless one-shot, returning a `CellPlacementResult` with `writeCsv(Path)`.
+- Cell placement does **not** require square pixels (continuous transform + area
+  use per-axis calibration).
+
+**Wizard:** *Extensions → BIWT → Place cells…* — requires existing detections;
+options dialog (origin radio, volume toggle, unclassified handling); whole-image
+fallback when `abm_domain` is absent; runs synchronously (geometry only);
+file-save; "no cells placed" guard.
+
+**Acceptance criteria:**
+
+- A cell at pixel (222, 333) in a 310 × 410 µm top-left domain anchored at pixel
+  (100, 200) is placed at (122, −133).
+- Detections outside the clip mask and unclassified detections (default options)
+  are dropped; `withUnclassifiedAs("x")` keeps the latter as type `x`.
+- `includeVolume` on a 400 µm² cell yields ≈ 6018 µm³.
+- CSV header is `x,y,z,type` (or `…,volume`); empty cell list throws.
+
+---
+
+## Feature: Unified Build Wizard (v0.4.0)
+
+**One-line description:** One wizard that builds substrates and/or cells over a single ABM
+domain + origin, so both exports share the same coordinate frame.
+
+**Priority:** Must-have (v0.4.0).
+
+**Behavioral specification:**
+
+- *Extensions → BIWT → Build initial conditions…* — the primary entry point (the focused
+  *Sample substrates…* and *Place cells…* items remain).
+- Parameters: "Build substrates" / "Build cells" checkboxes (≥ 1 required); voxel size
+  (enabled only for substrates); cell volume + unclassified options (enabled only for cells).
+- **Origin is annotation-center only** — no radio. `ABM_DOMAIN_TOP_LEFT` stays in the core enum
+  for headless callers; the GUI never offers it. Transparency comes from the domain-bounds readout
+  at confirmation, not a label.
+- **Domain selection / annotation picker:** exactly one `abm_domain` annotation is used directly;
+  with none, the user picks from the image's rectangle annotations (or whole image); with several
+  `abm_domain`, the user picks which. Backed by `DomainDetector.fromAnnotation`.
+- Confirmation shows the source, grid size (if substrates), and the PhysiCell domain bounds.
+- Substrates reuse the existing substrate dialog (Channel / Expression per substrate).
+- Output: one folder + base name → `<base>-substrates.csv`, `<base>-cells.csv`,
+  `<base>-physicell-domain.xml` (only those that apply).
+- The emitted domain is the **full** voxel-sized domain when substrates are built, else the
+  **bounds-only** annotation box for cells.
+
+**Acceptance criteria:**
+
+- Substrates and cells exported together land in the same frame (same domain + center origin).
+- With no `abm_domain` and several rectangle annotations, the user is asked which to use.
+- Cells-only run writes a bounds-only domain (x/y bounds, no voxel size).
+
+---
+
+## Feature: PhysiCell Config Auto-Patch (v0.4.0)
+
+**One-line description:** Rewrite the `<domain>` block of a user's PhysiCell config XML to match
+the export, so the simulated mesh lines up without hand-copying.
+
+**Priority:** Should-have (v0.4.0).
+
+**Behavioral specification:**
+
+- After an export, each wizard offers to update a chosen PhysiCell config XML.
+- `PhysiCellConfigUpdater.updateDomain(path, domain)` does a targeted text-splice of the first
+  `<domain>…</domain>` block: replaces the values of known child tags, **preserving** attributes
+  (e.g. `units="micron"`), comments, indentation, and the rest of the file; appends any missing
+  tag; writes a `<name>.bak` backup; throws if there is no `<domain>`.
+- A bounds-only domain (cells) updates only `x_min/x_max/y_min/y_max`; a voxel-sized domain
+  (substrates) updates the full block. The user's untouched values (e.g. `dz`, `z_min`) remain.
+
+**Acceptance criteria:**
+
+- Values update; `units` attributes and the rest of the config are preserved; a `.bak` is written.
+- Cells-only patch leaves the config's voxel size and z bounds unchanged.
 
 ---
 

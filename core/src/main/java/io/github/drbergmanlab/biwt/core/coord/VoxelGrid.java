@@ -1,29 +1,38 @@
 package io.github.drbergmanlab.biwt.core.coord;
 
 /**
- * Regular 2D voxel grid covering an ABM domain. Coordinates follow PhysiCell's
- * {@code Cartesian_Mesh::resize} convention along x: the i-th voxel center along x is
- * {@code xStartMicrons + (i + 0.5) * dxMicrons}.
+ * Regular 2D voxel grid covering an ABM domain, indexed exactly like a PhysiCell
+ * {@code Cartesian_Mesh}: voxel {@code (i, k)} is anchored at the domain's bottom-left corner
+ * {@code (xMinMicrons, yMinMicrons)} and its center is
+ * <pre>
+ *   xCenter(i) = xMinMicrons + (i + 0.5) * dxMicrons     i = 0 … nx-1  (left → right)
+ *   yCenter(k) = yMinMicrons + (k + 0.5) * dyMicrons     k = 0 … ny-1  (bottom → top)
+ * </pre>
+ * PhysiCell builds its mesh the same way — start at {@code (x_min, y_min)}, step half a voxel in,
+ * then stride a full voxel until {@code (x_max, y_max)}. So index {@code k} increases with the
+ * PhysiCell math y (up), and {@code k = 0} is the bottom row.
  *
- * <p><b>Y axis convention.</b> PhysiCell math has +y pointing up, but image-pixel rows go
- * top-to-bottom. So voxel {@code j = 0} (the image's top row) gets the <em>largest</em> y value
- * and {@code j = ny - 1} gets the smallest. The {@link #yCenter} formula reflects this:
- * <pre>yCenter(j) = yStartMicrons - (j + 0.5) * dyMicrons</pre>
- * The grid orientation still matches the image — top-left voxel is still {@code (i = 0, j = 0)},
- * no transpose, no rotation — only the µm coordinate associated with each {@code j} flips.
+ * <p><b>Where the y-flip lives.</b> Image-pixel rows go top→bottom while PhysiCell math +y is up.
+ * That flip is handled by the <em>sampler</em>, which anchors its pixel windows at the annotation's
+ * <em>bottom</em> edge so that voxel {@code k = 0} (smallest math y) aggregates the image's bottom
+ * rows. The grid itself carries no flip — it is a plain monotonic mesh.
  *
- * <p>For the MVP, the grid is sized so the smallest integer multiple of {@code stepSizeMicrons}
- * fully covers the annotation in each axis. The grid extent may therefore overhang the annotation
- * by up to {@code stepSize - 1} pixels per side; the sampler clips each window to the annotation.
+ * <p><b>Sizing and overhang.</b> The grid is the smallest integer multiple of the step covering the
+ * annotation: {@code nx = ceil(annW/step)}, {@code ny = ceil(annH/step)}. The leftover (when the
+ * step does not divide the annotation) lands as partial voxels at the <em>top and right</em> edges —
+ * the far corners from the {@code (x_min, y_min)} anchor. The sampler clips those windows to the
+ * annotation; they still count as full-size voxels in the PhysiCell domain.
  *
- * <p>The origin is anchored to the <em>voxel grid</em>, not to the image — the grid IS the ABM
- * domain. {@link CoordinateOrigin} picks where (0, 0) sits on it:
+ * <p><b>Origin.</b> The discretization algorithm is origin-agnostic; {@link CoordinateOrigin} only
+ * sets the numeric anchor {@code (xMinMicrons, yMinMicrons)}:
  * <ul>
- *   <li>{@link CoordinateOrigin#ABM_DOMAIN_CENTER}: grid center maps to (0, 0).
- *       Grid spans {@code [-W/2, +W/2] × [-H/2, +H/2]} in µm — the symmetric domain PhysiCell expects.
- *   <li>{@link CoordinateOrigin#ABM_DOMAIN_TOP_LEFT}: grid top-left corner maps to (0, 0).
- *       Grid extends into the fourth quadrant — x grows right, y grows up (so the image-bottom edge
- *       of the grid is at the most negative y).
+ *   <li>{@link CoordinateOrigin#ABM_DOMAIN_TOP_LEFT}: the annotation's top-left corner is (0, 0),
+ *       so {@code xMin = 0} and {@code yMin = -annH}. The domain extends right and up into the
+ *       overhang ({@code x_max = nx·dx}, {@code y_max = yMin + ny·dy ≥ 0}).
+ *   <li>{@link CoordinateOrigin#ABM_DOMAIN_CENTER}: the <em>annotation</em> is centered on (0, 0),
+ *       so {@code xMin = -annW/2} and {@code yMin = -annH/2}. When the step does not divide the
+ *       annotation the domain <em>bounds</em> come out slightly asymmetric (the overhang is
+ *       one-sided, top-right) even though the annotation itself is centered.
  * </ul>
  */
 public record VoxelGrid(
@@ -31,8 +40,8 @@ public record VoxelGrid(
         int ny,
         double dxMicrons,
         double dyMicrons,
-        double xStartMicrons,
-        double yStartMicrons,
+        double xMinMicrons,
+        double yMinMicrons,
         CoordinateOrigin origin
 ) {
     public VoxelGrid {
@@ -44,34 +53,41 @@ public record VoxelGrid(
         }
     }
 
+    /** Center x (µm) of voxel column {@code i}, {@code i = 0 … nx-1} left → right. */
     public double xCenter(int i) {
         if (i < 0 || i >= nx) throw new IndexOutOfBoundsException("i=" + i + " out of [0, " + nx + ")");
-        return xStartMicrons + (i + 0.5) * dxMicrons;
+        return xMinMicrons + (i + 0.5) * dxMicrons;
     }
 
-    public double yCenter(int j) {
-        if (j < 0 || j >= ny) throw new IndexOutOfBoundsException("j=" + j + " out of [0, " + ny + ")");
-        // Image rows go top→bottom but math +y is up: subtract, not add.
-        return yStartMicrons - (j + 0.5) * dyMicrons;
+    /** Center y (µm) of voxel row {@code k}, {@code k = 0 … ny-1} bottom → top (PhysiCell index). */
+    public double yCenter(int k) {
+        if (k < 0 || k >= ny) throw new IndexOutOfBoundsException("k=" + k + " out of [0, " + ny + ")");
+        return yMinMicrons + (k + 0.5) * dyMicrons;
+    }
+
+    /** Right edge of the domain (µm): {@code xMin + nx·dx}. */
+    public double xMaxMicrons() {
+        return xMinMicrons + nx * dxMicrons;
+    }
+
+    /** Top edge of the domain (µm): {@code yMin + ny·dy}. */
+    public double yMaxMicrons() {
+        return yMinMicrons + ny * dyMicrons;
     }
 
     /**
      * Build a voxel grid that covers an annotation rectangle of size
-     * {@code (annotationWidthMicrons, annotationHeightMicrons)}, using the requested step size.
+     * {@code (annotationWidthMicrons, annotationHeightMicrons)} using the requested step size.
      *
-     * <p>The grid uses the smallest {@code nx} and {@code ny} such that
-     * {@code nx * stepSizeMicrons >= annotationWidthMicrons} and similarly for y. Per the
-     * clip-to-annotation rule, the grid extent may overhang the annotation by up to
-     * {@code stepSizeMicrons} in each axis; the sampler handles the intersection.
+     * <p>The grid uses the smallest {@code nx, ny} such that {@code nx·step ≥ annotationWidth} and
+     * {@code ny·step ≥ annotationHeight}. The overhang (up to one step per far edge) is clipped by
+     * the sampler. {@code origin} sets the numeric {@code (xMin, yMin)} anchor; the annotation's
+     * image-pixel position never enters the equation.
      *
-     * <p>The math-µm origin (where (0, 0) sits) is anchored to the voxel grid itself per the
-     * {@code origin} argument — the image dimensions and the annotation's image-pixel position
-     * don't enter the equation.
-     *
-     * @param annotationWidthMicrons annotation width in µm (must be > 0)
+     * @param annotationWidthMicrons  annotation width in µm (must be > 0)
      * @param annotationHeightMicrons annotation height in µm (must be > 0)
-     * @param stepSizeMicrons requested step size in µm (must be > 0)
-     * @param origin coordinate origin convention
+     * @param stepSizeMicrons         voxel step size in µm (must be > 0)
+     * @param origin                  coordinate origin convention
      */
     public static VoxelGrid cover(
             double annotationWidthMicrons,
@@ -90,25 +106,7 @@ public record VoxelGrid(
         int nx = (int) Math.ceil(annotationWidthMicrons / stepSizeMicrons);
         int ny = (int) Math.ceil(annotationHeightMicrons / stepSizeMicrons);
 
-        double gridWidthMicrons = nx * stepSizeMicrons;
-        double gridHeightMicrons = ny * stepSizeMicrons;
-
-        double xStart;
-        double yStart;
-        switch (origin) {
-            case ABM_DOMAIN_TOP_LEFT -> {
-                // Grid top-left → (0, 0). Voxel (0, 0) center at (+0.5·dx, −0.5·dy).
-                xStart = 0;
-                yStart = 0;
-            }
-            case ABM_DOMAIN_CENTER -> {
-                // Grid center → (0, 0). Grid spans [-W/2, +W/2] × [-H/2, +H/2].
-                xStart = -gridWidthMicrons / 2.0;
-                yStart = gridHeightMicrons / 2.0;
-            }
-            default -> throw new IllegalArgumentException("Unknown origin: " + origin);
-        }
-
-        return new VoxelGrid(nx, ny, stepSizeMicrons, stepSizeMicrons, xStart, yStart, origin);
+        double[] anchor = origin.minCornerMicrons(annotationWidthMicrons, annotationHeightMicrons);
+        return new VoxelGrid(nx, ny, stepSizeMicrons, stepSizeMicrons, anchor[0], anchor[1], origin);
     }
 }

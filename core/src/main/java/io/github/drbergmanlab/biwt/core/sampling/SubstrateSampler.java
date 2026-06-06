@@ -11,13 +11,17 @@ import java.util.Objects;
 
 /**
  * Samples one channel of an {@link ImageServer} on a regular grid of windows clipped to the
- * {@link AbmDomain}'s annotation mask. For each voxel {@code (i, j)}:
+ * {@link AbmDomain}'s annotation mask. Windows are anchored at the annotation's <b>bottom-left</b>
+ * pixel corner and tiled right and up, matching the PhysiCell mesh: voxel column {@code i} grows
+ * rightward from {@code xMinPx}, and voxel row {@code k = 0} is the <em>bottom</em> row (largest
+ * pixel y, smallest PhysiCell math y), growing upward. That bottom anchoring is where the image
+ * row→math-y flip lives. For each voxel {@code (i, k)}:
  *
  * <ol>
- *   <li>Compute the pixel-space window of size {@link SamplingKernel#windowSizePx} starting at
- *       {@code (domain.xMinPx + i*stride, domain.yMinPx + j*stride)}.</li>
- *   <li>Clip the window to the image bounds (the grid may overhang the annotation by up to
- *       {@code stride - 1} pixels per side, which can push the window past the image edge).</li>
+ *   <li>Compute the pixel-space window of size {@link SamplingKernel#windowSizePx}: x in
+ *       {@code [xMinPx + i*stride, …]}, y ending at {@code yMaxPx - k*stride} (so row 0 sits on the
+ *       annotation bottom). The overhang (partial voxels) therefore lands at the top and right.</li>
+ *   <li>Clip the window to the image bounds.</li>
  *   <li>Read that clipped tile via {@link ImageServer#readRegion(RegionRequest)} at downsample 1.0.</li>
  *   <li>Average the selected channel's pixel values, including only pixels whose centers lie inside
  *       {@code domain.clipMaskPx} (the annotation outline).</li>
@@ -29,7 +33,8 @@ import java.util.Objects;
 public final class SubstrateSampler {
 
     /**
-     * Sample the given channel into a {@code values[ny][nx]} array indexed by (row j, column i).
+     * Sample the given channel into a {@code values[ny][nx]} array indexed by (row k, column i),
+     * where {@code k = 0} is the bottom row (PhysiCell mesh index) and {@code i = 0} the left column.
      *
      * @param nx number of voxel columns (x); the caller usually passes {@code grid.nx()}
      * @param ny number of voxel rows (y); the caller usually passes {@code grid.ny()}
@@ -58,19 +63,20 @@ public final class SubstrateSampler {
         Shape mask = domain.clipMaskPx();
         String path = server.getPath();
 
-        // Anchor the grid at the annotation top-left (in pixel space).
-        // Using ints because window/stride live in pixel space.
-        int x0Px = (int) Math.round(domain.xMinPx());
-        int y0Px = (int) Math.round(domain.yMinPx());
+        // Anchor at the annotation's bottom-left pixel corner: x grows right from xMinPx, y is
+        // tiled upward from the bottom edge yMaxPx so row k = 0 sits on the annotation bottom.
+        // (Window/stride live in pixel space, so ints.)
+        int xLeftPx = (int) Math.round(domain.xMinPx());
+        int yBottomPx = (int) Math.round(domain.yMaxPx());
 
         double[][] values = new double[ny][nx];
 
-        for (int j = 0; j < ny; j++) {
+        for (int k = 0; k < ny; k++) {
             for (int i = 0; i < nx; i++) {
-                int wx0 = x0Px + i * kernel.stridePx();
-                int wy0 = y0Px + j * kernel.stridePx();
+                int wx0 = xLeftPx + i * kernel.stridePx();
                 int wx1 = wx0 + kernel.windowSizePx();
-                int wy1 = wy0 + kernel.windowSizePx();
+                int wy1 = yBottomPx - k * kernel.stridePx();
+                int wy0 = wy1 - kernel.windowSizePx();
 
                 // Clip the window to the image bounds.
                 int cx0 = Math.max(0, wx0);
@@ -79,11 +85,11 @@ public final class SubstrateSampler {
                 int cy1 = Math.min(imageH, wy1);
 
                 if (cx1 <= cx0 || cy1 <= cy0) {
-                    values[j][i] = Double.NaN;
+                    values[k][i] = Double.NaN;
                     continue;
                 }
 
-                values[j][i] = sampleOneWindow(server, path, mask, channelIndex,
+                values[k][i] = sampleOneWindow(server, path, mask, channelIndex,
                         cx0, cy0, cx1 - cx0, cy1 - cy0);
             }
         }
