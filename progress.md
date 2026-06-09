@@ -1,5 +1,79 @@
 # progress.md — biwt-jvm Session Journal
 
+## Session: Results Visualizer (2026-06-09)
+
+### Goal
+
+Let a researcher *see* a build before handing it to PhysiCell: cells drawn as type-colored disks
+over the active substrate as a colormapped heatmap, in the shared ABM µm frame. Cycle substrates,
+pin the color range, and zoom — both from the in-memory build results (post-build preview on all
+three wizards) and from saved CSVs (a standalone *View results…* item).
+
+### Key design decisions
+
+**Strict core/GUI split for the math.** Every value→pixel decision lives in a new headless,
+unit-tested `io.github.drbergmanlab.biwt.core.viz` package: `CellGeometry` (volume→equivalent-sphere
+radius, with PhysiCell's 2494 µm³ default for cells lacking a volume), `ColorMap` (viridis-like,
+packed-ARGB `argb`/`colorAt`, NaN→transparent, degenerate range→midpoint), `DataRange`
+(NaN-skipping min/max for autorange), and `WorldToScreen` (letterbox equal-scale + y-flip). The
+extension's `ResultsViewer` only drives the `Canvas`; the int↔`javafx Color` bridge sits in
+`CategoricalPalette`. This keeps the historically-troublesome bits (the y-flip especially) testable
+without a GUI — 23 new core tests.
+
+**Y-flip is the load-bearing invariant.** PhysiCell math +y is up; screen rows go down.
+`WorldToScreen.screenY` maps the largest world-y to the top of the plot, and the heatmap
+`WritableImage` is written with row 0 = top (`imgRow = ny-1-k`). Substrate `values[k][i]` has
+`k=0` = bottom (confirmed against `SubstrateCsvWriter`), so the image and the cells agree. This is
+the exact spot the old "upside-down scatter" bug lived; a `WorldToScreenTest` pins it.
+
+**Heatmap via a voxel-resolution `WritableImage`, not per-voxel `fillRect`.** One `PixelWriter`
+pass builds an `nx×ny` image (cached, rebuilt only on substrate/cmin/cmax change), then a single
+`drawImage` with smoothing off maps the grid extent onto the plot — cheap for the README's
+625×575 grids and allocation-free on resize/zoom redraws. NaN voxels are written as transparent
+(ARGB 0) so clipped voxels read as "no data".
+
+**One shared frame, cells toggled — not tabs.** Cells and substrate share the µm frame, so the
+viewer overlays them with a "show cells" checkbox rather than splitting into tabs. Substrate
+cycling is driven by a single active index synced across the `ComboBox`, ◀/▶ buttons, and Left/Right
+keys (an event filter that defers to a focused `TextField` so arrow-key editing still works).
+
+**Limit/cmin/cmax boxes: empty = resolved default, commit on Enter/focus-loss.** Empty `cmin`/`cmax`
+autorange the active substrate (recomputed on every substrate change) and surface the auto value as
+the box's prompt text; empty `xmin…ymax` fall back to the model's default bounds. Unparseable input
+is treated as empty and flags the box with a red border (no crash); `min ≥ max` falls back to the
+default for that axis. No Apply button.
+
+**CSV-loading viewer reconstructs the grid from coordinates.** `ResultsCsvLoader` (core) parses a
+cells CSV into `CellRecord`s and a substrate CSV back into a `VoxelGrid` + `NamedSubstrate`s by
+taking the sorted unique x/y centers (`nx/ny`, `dx/dy` from their spacing, bounds = center ∓ d/2)
+and re-binning each row into `values[k][i]` (`k=0` = smallest y). `BiwtViewCommand` also auto-loads
+the matching `-cells.csv`/`-substrates.csv` sibling so a full build opens with both layers. A small
+RFC-4180 line parser handles quoted, comma-bearing type names.
+
+**Preview offered on all three wizards.** The build task now returns the in-memory `SamplingResult`
++ `CellPlacementResult` (was a bare status string) so `WizardSupport.offerResultsPreview` can open
+the viewer with no file parsing; `Sample substrates…` and `Place cells…` offer their single-layer
+results the same way. This is staged for a future release (v0.5.0) — no version bump here.
+
+### Rejected approaches
+
+**Per-voxel `fillRect` heatmap.** Fine for tiny grids but re-rasterizes every redraw; the cached
+`WritableImage` is strictly better at the grid sizes BIWT produces.
+
+**Pulling QuPath `PathClass` colors for cell types.** The in-memory `CellRecord` carries only the
+type *string*, so the viewer auto-assigns from a color-blind-friendly categorical palette
+(Okabe–Ito + extras) in first-seen order, with an optional `typeColors` override left on the model
+for a future caller that has the classes handy.
+
+### Tests added
+
+23 in `:core` viz: `CellGeometryTest`, `ColorMapTest`, `DataRangeTest`, `WorldToScreenTest`
+(y-flip, letterbox, inverse round-trip), `ResultsCsvLoaderTest` (substrate grid round-trip incl. a
+NaN voxel, cells with/without volume, quoted type). Core suite now 101 (was 78). The JavaFX viewer
+is validated manually per the repo's convention.
+
+---
+
 ## Session: v0.4.0 — unified initial-conditions flow (2026-06-06)
 
 ### Goal

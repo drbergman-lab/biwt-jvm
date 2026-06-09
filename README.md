@@ -133,7 +133,7 @@ toolchain-provisioned JDK 25 (downloaded automatically on first build).
 ```sh
 git clone https://github.com/drbergman-lab/biwt-jvm
 cd biwt-jvm
-./gradlew :core:test                    # 78 unit tests in the core
+./gradlew :core:test                    # 101 unit tests in the core
 ./gradlew :qupath-extension:shadowJar   # fat jar in qupath-extension/build/libs/
 ```
 
@@ -197,6 +197,12 @@ The build is two modules:
 - [x] **Domain emitted from every method** — the cell export now writes a **bounds-only** `<domain>` sidecar (just `x_min/x_max/y_min/y_max`, leaving the user's voxel size alone); substrates write the full block.
 - [x] **PhysiCell config auto-patch** — every wizard offers to rewrite a chosen PhysiCell config's `<domain>` to match the export (`.bak` backup, attributes/comments preserved). `PhysiCellConfigUpdater` in `:core`.
 - [x] **91 unit tests** — 78 in `:core` (VoxelGrid, CoordinateTransform, DomainDetector, SubstrateSampler, SubstrateCsvWriter, BiwtSampler, PhysiCellDomain, PhysiCellConfigUpdater, CellExtractor, CellCsvWriter, channel-math) and 13 in `:qupath-extension`.
+
+### Completed (v0.5.0 — results visualizer)
+
+- [x] **Results visualizer** — an interactive viewer for a build: cells drawn as type-colored disks (radius = equivalent-sphere radius) over the active substrate as a viridis-like heatmap, in the shared ABM µm frame (y-flipped so tissue is right-side-up). Cycle substrates (dropdown / ◀ ▶ / arrow keys), pin the color range with `cmin`/`cmax`, zoom with `xmin/xmax/ymin/ymax`, and toggle cells over the heatmap with a legend. All value→pixel math (`CellGeometry`, `ColorMap`, `DataRange`, `WorldToScreen`) is unit-tested in `:core` (`…core.viz`); rendering is JavaFX in `…abm.viz`. Offered as a "Preview results" step on all three wizards, plus a standalone **View results…** menu item that reopens saved CSVs (`ResultsCsvLoader` reconstructs the grid from the coordinates).
+- [x] **Shared, persistent output folder** — all wizards default the save location to the last folder you exported to (a preference that survives restarts, for processing images serially), else the current image's directory, else home.
+- [x] **101 unit tests** — 23 new in `:core` (`…core.viz`: CellGeometry, ColorMap, DataRange, WorldToScreen, ResultsCsvLoader) on top of the existing 78.
 
 ### Planned (post-MVP)
 

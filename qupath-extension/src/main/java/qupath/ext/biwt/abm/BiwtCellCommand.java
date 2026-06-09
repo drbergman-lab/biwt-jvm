@@ -21,6 +21,7 @@ import javafx.stage.Modality;
 import javafx.stage.Stage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import qupath.ext.biwt.abm.viz.ViewerModel;
 import qupath.fx.dialogs.Dialogs;
 import qupath.lib.gui.QuPathGUI;
 import qupath.lib.images.ImageData;
@@ -108,6 +109,7 @@ public final class BiwtCellCommand {
                 "Placed " + result.count() + " cell(s) to " + outPath.getFileName()
                         + " (+ " + domainPath.getFileName() + ")");
         WizardSupport.offerConfigUpdate(qupath, TITLE, result.physiCellDomain());
+        WizardSupport.offerResultsPreview(qupath, TITLE, ViewerModel.of(null, result));
     }
 
     // ---------------- options dialog ----------------
@@ -190,10 +192,15 @@ public final class BiwtCellCommand {
         FileChooser fc = new FileChooser();
         fc.setTitle("Save cells CSV");
         fc.setInitialFileName(suggestFileName(imageData));
+        fc.setInitialDirectory(WizardSupport.defaultOutputDirectory(imageData));
         fc.getExtensionFilters().add(new FileChooser.ExtensionFilter("CSV", "*.csv"));
         Stage owner = qupath == null ? null : qupath.getStage();
         File f = fc.showSaveDialog(owner);
-        return f == null ? null : f.toPath();
+        if (f == null) {
+            return null;
+        }
+        WizardSupport.rememberOutputDir(f.toPath().getParent());
+        return f.toPath();
     }
 
     private static String suggestFileName(ImageData<BufferedImage> imageData) {

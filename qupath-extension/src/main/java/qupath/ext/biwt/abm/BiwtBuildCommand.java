@@ -31,6 +31,7 @@ import org.slf4j.LoggerFactory;
 import qupath.ext.biwt.abm.BiwtAbmCommand.ChannelSet;
 import qupath.ext.biwt.abm.BiwtAbmCommand.CommittedSubstrate;
 import qupath.ext.biwt.abm.BiwtAbmCommand.SubstrateChoices;
+import qupath.ext.biwt.abm.viz.ViewerModel;
 import qupath.fx.dialogs.Dialogs;
 import qupath.lib.gui.QuPathGUI;
 import qupath.lib.images.ImageData;
@@ -70,6 +71,10 @@ public final class BiwtBuildCommand {
     /** What to build + the cell options. {@code voxelMicrons} is only meaningful when substrates run. */
     private record BuildInputs(boolean substrates, boolean cells, double voxelMicrons,
                                CellPlacementOptions cellOptions) {}
+
+    /** The build task's result: the user-facing summary plus the in-memory outputs (for preview). */
+    private record BuildOutcome(String message, SamplingResult substrateResult,
+                                CellPlacementResult cellResult) {}
 
     public void run() {
         ImageData<BufferedImage> imageData = qupath.getImageData();
@@ -266,7 +271,7 @@ public final class BiwtBuildCommand {
         dialog.initOwner(qupath == null ? null : qupath.getStage());
         dialog.initModality(Modality.APPLICATION_MODAL);
 
-        TextField folderField = new TextField();
+        TextField folderField = new TextField(WizardSupport.defaultOutputFolder(imageData));
         folderField.setPrefColumnCount(28);
         folderField.setEditable(false);
         Button browse = new Button("Browse…");
@@ -294,6 +299,8 @@ public final class BiwtBuildCommand {
         browse.setOnAction(e -> {
             DirectoryChooser dc = new DirectoryChooser();
             dc.setTitle("Output folder");
+            File start = new File(folderField.getText().trim());
+            if (start.isDirectory()) dc.setInitialDirectory(start);
             File f = dc.showDialog(dialog);
             if (f != null) folderField.setText(f.getAbsolutePath());
         });
@@ -315,7 +322,9 @@ public final class BiwtBuildCommand {
             if (hasSubstrates && sub.isEmpty()) { warning.setText("Enter a substrates file name."); return; }
             if (hasCells && cell.isEmpty())    { warning.setText("Enter a cells file name."); return; }
             if (domain.isEmpty())              { warning.setText("Enter a domain file name."); return; }
-            ref.set(new SaveTarget(Path.of(folder),
+            Path folderPath = Path.of(folder);
+            WizardSupport.rememberOutputDir(folderPath);
+            ref.set(new SaveTarget(folderPath,
                     hasSubstrates ? sub : null, hasCells ? cell : null, domain));
             dialog.close();
         });
@@ -373,46 +382,51 @@ public final class BiwtBuildCommand {
         progress.setScene(new Scene(box));
         progress.setResizable(false);
 
-        Task<String> task = new Task<>() {
+        Task<BuildOutcome> task = new Task<>() {
             @Override
-            protected String call() throws Exception {
+            protected BuildOutcome call() throws Exception {
                 List<String> written = new ArrayList<>();
                 String cellNote = "";
+                SamplingResult substrateResult = null;
+                CellPlacementResult cellResult = null;
 
                 if (!specs.isEmpty()) {  // substrates requested AND at least one defined
                     updateMessage("Sampling " + specs.size() + " substrate(s)…");
                     ImageServer<BufferedImage> server = new TransformedServerBuilder(channelSet.rawServer())
                             .applyColorTransforms(transforms)
                             .build();
-                    SamplingResult sres = sampler.sample(server, plan, specs);
-                    sres.writeCsv(target.substratesCsv());
+                    substrateResult = sampler.sample(server, plan, specs);
+                    substrateResult.writeCsv(target.substratesCsv());
                     written.add(target.substratesCsv().getFileName().toString());
                 }
 
                 if (inputs.cells()) {
                     updateMessage("Placing cells…");
-                    CellPlacementResult cres = placer.place(imageData, domain, ORIGIN, inputs.cellOptions());
-                    if (cres.count() == 0) {
+                    cellResult = placer.place(imageData, domain, ORIGIN, inputs.cellOptions());
+                    if (cellResult.count() == 0) {
                         cellNote = "  (no cells placed — none classified inside the domain)";
                     } else {
-                        cres.writeCsv(target.cellsCsv());
-                        written.add(cres.count() + " cells → " + target.cellsCsv().getFileName());
+                        cellResult.writeCsv(target.cellsCsv());
+                        written.add(cellResult.count() + " cells → " + target.cellsCsv().getFileName());
                     }
                 }
 
                 updateMessage("Writing domain…");
                 physiCellDomain.writeXml(target.domainXml());
                 written.add(target.domainXml().getFileName().toString());
-                return String.join(", ", written) + cellNote;
+                return new BuildOutcome(String.join(", ", written) + cellNote, substrateResult, cellResult);
             }
         };
         bar.progressProperty().bind(task.progressProperty());
         status.textProperty().bind(task.messageProperty());
         task.setOnSucceeded(e -> {
             progress.close();
-            Dialogs.showInfoNotification(TITLE, "Wrote: " + task.getValue());
-            logger.info("BIWT build wrote: {}", task.getValue());
+            BuildOutcome outcome = task.getValue();
+            Dialogs.showInfoNotification(TITLE, "Wrote: " + outcome.message());
+            logger.info("BIWT build wrote: {}", outcome.message());
             WizardSupport.offerConfigUpdate(qupath, TITLE, physiCellDomain);
+            WizardSupport.offerResultsPreview(qupath, TITLE,
+                    ViewerModel.of(outcome.substrateResult(), outcome.cellResult()));
         });
         task.setOnFailed(e -> {
             progress.close();

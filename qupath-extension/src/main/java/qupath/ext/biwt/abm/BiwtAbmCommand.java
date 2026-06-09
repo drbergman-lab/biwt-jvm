@@ -48,6 +48,7 @@ import qupath.lib.images.servers.TransformedServerBuilder;
 import qupath.lib.gui.QuPathGUI;
 import qupath.ext.biwt.abm.transforms.ChannelMathTransform;
 import qupath.ext.biwt.abm.transforms.OpticalDensitySumTransform;
+import qupath.ext.biwt.abm.viz.ViewerModel;
 import io.github.drbergmanlab.biwt.core.channelmath.Expression;
 import io.github.drbergmanlab.biwt.core.channelmath.ExpressionParseException;
 import io.github.drbergmanlab.biwt.core.channelmath.ExpressionParser;
@@ -340,10 +341,15 @@ public final class BiwtAbmCommand {
         FileChooser fc = new FileChooser();
         fc.setTitle("Save substrates CSV");
         fc.setInitialFileName(suggestFileName(imageData));
+        fc.setInitialDirectory(WizardSupport.defaultOutputDirectory(imageData));
         fc.getExtensionFilters().add(new FileChooser.ExtensionFilter("CSV", "*.csv"));
         Stage owner = qupath == null ? null : qupath.getStage();
         File f = fc.showSaveDialog(owner);
-        return f == null ? null : f.toPath();
+        if (f == null) {
+            return null;
+        }
+        WizardSupport.rememberOutputDir(f.toPath().getParent());
+        return f.toPath();
     }
 
     private static String suggestFileName(ImageData<BufferedImage> imageData) {
@@ -441,6 +447,7 @@ public final class BiwtAbmCommand {
             logger.info("BIWT wrote {} ({} × {} voxels, {} substrate(s))",
                     outPath, r.grid().nx(), r.grid().ny(), r.substrates().size());
             WizardSupport.offerConfigUpdate(qupath, TITLE, plan.physiCellDomain());
+            WizardSupport.offerResultsPreview(qupath, TITLE, ViewerModel.of(r, null));
         });
         task.setOnFailed(e -> {
             progressStage.close();

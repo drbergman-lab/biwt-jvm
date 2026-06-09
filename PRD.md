@@ -455,6 +455,57 @@ the export, so the simulated mesh lines up without hand-copying.
 
 ---
 
+## Feature: Results Visualizer
+
+**One-line description:** An interactive viewer that draws the cells and substrate fields a build
+produced, in their shared ABM µm frame, so the user can sanity-check the export before running
+PhysiCell.
+
+**Priority:** Should-have (staged for v0.5.0).
+
+**Behavioral specification:**
+
+- **Cell scatter.** Each placed cell is a filled disk centered at its `(x, y)` µm position with
+  radius = the cell's equivalent-sphere radius (`r = cbrt(3V/4π)`); cells with no volume use
+  PhysiCell's default `V = 2494 µm³` (`r ≈ 8.412 µm`). Disks are world-scaled (so they zoom and stay
+  circular), colored by `type` from a color-blind-friendly categorical palette (first-seen order),
+  drawn with ~0.7 alpha and a thin stroke, and accompanied by a legend (swatch + name + count). A
+  "show cells" toggle hides them so the heatmap can be read alone.
+- **Substrate heatmap.** The active substrate is rendered over the voxel grid with a
+  perceptually-uniform (viridis-like) colormap; `NaN` voxels (clipped) are transparent. A
+  `ComboBox`, ◀ / ▶ buttons, and Left/Right arrow keys all cycle the active substrate (wrapping at
+  the ends) via one shared active index.
+- **Colorbar + range.** A vertical colorbar sits right of the plot with `cmax` directly above and
+  `cmin` directly below it. A number in either box pins that end of the color range; empty means the
+  current substrate's data max/min (recomputed on substrate change, ignoring `NaN`) and is shown as
+  the box's prompt text. Unparseable input is treated as empty and flagged inline; degenerate ranges
+  don't divide by zero.
+- **Zoom.** `xmin/xmax/ymin/ymax` boxes around the plot pin the visible world rectangle; empty uses
+  the full domain bound for that side. Commit on Enter or focus-loss; `min ≥ max` falls back.
+- **Coordinate frame.** The world→screen transform uses equal x/y scale (letterbox) and flips y, so
+  the largest µm-y is at the top of the plot (tissue right-side-up).
+- **Entry points.** *Build initial conditions…*, *Sample substrates…*, and *Place cells…* each offer
+  "Preview results" on success, opening the viewer on the in-memory results (no file parsing). A
+  standalone *Extensions → BIWT → View results…* loads a saved substrates or cells CSV (and its
+  matching sibling, when present) by reconstructing the grid from the CSV coordinates.
+- **Architecture.** All value→pixel math (radius, colormap, autorange, world→screen) is pure
+  `:core` (`io.github.drbergmanlab.biwt.core.viz`) with unit tests; rendering is JavaFX in
+  `qupath.ext.biwt.abm.viz` and validated manually.
+
+**Acceptance criteria:**
+
+- A cell near the tissue top renders near the top of the plot (y-flip correct); disks stay circular
+  under zoom (equal scale).
+- Cycling substrates (dropdown, arrows, keyboard) stays in sync and wraps; the colorbar and autorange
+  update to the new substrate.
+- `NaN` substrate voxels are transparent; an empty `cmin`/`cmax` autoranges; a pinned value clamps.
+- With no substrates, the substrate controls and colorbar are hidden; with no cells, the toggle and
+  legend are hidden.
+- A saved substrates CSV reopens with the grid and values reconstructed (round-trips through
+  `ResultsCsvLoader`).
+
+---
+
 ## Deferred Features (not in v0.1.0)
 
 ### Coordinate-origin radio

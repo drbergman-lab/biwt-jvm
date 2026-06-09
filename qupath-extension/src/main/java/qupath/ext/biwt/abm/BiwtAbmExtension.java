@@ -34,7 +34,9 @@ public class BiwtAbmExtension implements QuPathExtension {
         sampleItem.setOnAction(e -> new BiwtAbmCommand(qupath).run());
         MenuItem cellsItem = new MenuItem("Place cells…");
         cellsItem.setOnAction(e -> new BiwtCellCommand(qupath).run());
-        menu.getItems().addAll(buildItem, sampleItem, cellsItem);
+        MenuItem viewItem = new MenuItem("View results…");
+        viewItem.setOnAction(e -> new BiwtViewCommand(qupath).run());
+        menu.getItems().addAll(buildItem, sampleItem, cellsItem, viewItem);
     }
 
     @Override
