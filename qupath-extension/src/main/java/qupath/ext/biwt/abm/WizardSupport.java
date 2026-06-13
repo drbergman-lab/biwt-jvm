@@ -7,7 +7,15 @@ import io.github.drbergmanlab.biwt.core.domain.DomainDetectionOptions;
 import io.github.drbergmanlab.biwt.core.domain.DomainDetector;
 import io.github.drbergmanlab.biwt.core.domain.DomainException;
 import javafx.beans.property.StringProperty;
+import javafx.geometry.Insets;
+import javafx.geometry.Pos;
+import javafx.scene.Scene;
+import javafx.scene.control.Button;
+import javafx.scene.control.Label;
+import javafx.scene.layout.HBox;
+import javafx.scene.layout.VBox;
 import javafx.stage.FileChooser;
+import javafx.stage.Modality;
 import javafx.stage.Stage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -147,6 +155,80 @@ final class WizardSupport {
         }
     }
 
+    /**
+     * Guard for the now-non-modal wizard dialogs: confirm the active image is still the one the
+     * wizard captured at the start. Pan/zoom is harmless, but switching images mid-wizard would
+     * sample/place against the wrong image — this catches that. Returns {@code true} to proceed; on
+     * a mismatch it reports the problem and returns {@code false} so the caller aborts cleanly.
+     */
+    static boolean confirmSameImage(QuPathGUI qupath, ImageData<BufferedImage> captured, String title) {
+        if (qupath != null && qupath.getImageData() != captured) {
+            Dialogs.showErrorMessage(title,
+                    "The active image changed while the wizard was open.\n\n"
+                            + "Switch back to the original image, or restart the wizard.");
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * A confirmation step that can also step <b>Back</b>. Shows the prose {@code summary} in the
+     * normal UI font and the {@code domainBlock} (x/y/z bounds) as a monospaced data card so its
+     * columns line up, then Back / Cancel / Proceed. Used for the plan-confirmation screen so the
+     * user can return to the parameters screen instead of only aborting. Non-modal, matching the
+     * other wizard dialogs. Returns {@link Nav}: next = Proceed, back = step to the previous screen,
+     * cancel = abort.
+     *
+     * @param summary     prose lines describing the source and what will be built (UI font)
+     * @param domainBlock the PhysiCell {@code x/y/z} bounds table (rendered monospaced)
+     */
+    static Nav<Boolean> confirmWithBack(Stage owner, String title, String summary, String domainBlock) {
+        var ref = new java.util.concurrent.atomic.AtomicReference<Nav<Boolean>>(Nav.cancel());
+
+        Stage dialog = new Stage();
+        dialog.setTitle(title);
+        if (owner != null) {
+            dialog.initOwner(owner);
+        }
+        dialog.initModality(Modality.NONE);
+
+        Label summaryLabel = new Label(summary);
+        summaryLabel.setStyle("-fx-font-size: 13;");
+
+        // The domain bounds as a small monospaced card so the columns align and read as a table.
+        Label domainHeader = new Label("PhysiCell domain — set these in your config XML");
+        domainHeader.setStyle("-fx-font-weight: bold; -fx-text-fill: #2a3b4d; -fx-font-size: 11.5;");
+        Label domainText = new Label(domainBlock);
+        domainText.setStyle("-fx-font-family: monospace; -fx-font-size: 12.5;");
+        VBox domainCard = new VBox(6, domainHeader, domainText);
+        domainCard.setPadding(new Insets(10, 12, 10, 12));
+        domainCard.setStyle("-fx-background-color: #f2f5f9; -fx-background-radius: 6; "
+                + "-fx-border-color: #d4dbe5; -fx-border-radius: 6;");
+
+        Label prompt = new Label("Proceed with these settings?");
+        prompt.setStyle("-fx-font-size: 13; -fx-font-weight: bold;");
+
+        Button backButton = new Button("Back");
+        Button proceedButton = new Button("Proceed");
+        Button cancelButton = new Button("Cancel");
+        proceedButton.setDefaultButton(true);
+        cancelButton.setCancelButton(true);
+        proceedButton.setOnAction(e -> { ref.set(Nav.next(Boolean.TRUE)); dialog.close(); });
+        backButton.setOnAction(e -> { ref.set(Nav.back()); dialog.close(); });
+        cancelButton.setOnAction(e -> { ref.set(Nav.cancel()); dialog.close(); });
+
+        HBox buttons = new HBox(10, backButton, cancelButton, proceedButton);
+        buttons.setAlignment(Pos.CENTER_RIGHT);
+
+        VBox root = new VBox(14, summaryLabel, domainCard, prompt, buttons);
+        root.setPadding(new Insets(18, 20, 18, 20));
+        root.setMinWidth(440);
+        dialog.setScene(new Scene(root));
+        dialog.setResizable(false);
+        dialog.showAndWait();
+        return ref.get();
+    }
+
     private static String labelFor(PathObject o, int idx) {
         ROI roi = o.getROI();
         String name = (o.getName() == null || o.getName().isBlank()) ? "unnamed rectangle" : o.getName();
@@ -166,7 +248,7 @@ final class WizardSupport {
      * only the x/y bounds; a voxel-sized one updates the full block. A {@code .bak} backup is written.
      */
     static void offerConfigUpdate(QuPathGUI qupath, String title, PhysiCellDomain domain) {
-        boolean go = Dialogs.showConfirmDialog(title,
+        boolean go = Dialogs.showYesNoDialog(title,
                 "Update a PhysiCell config file's <domain> to match this export?\n\n"
                         + (domain.voxelSized()
                                 ? "Sets x/y/z bounds and dx/dy/dz."
@@ -202,7 +284,7 @@ final class WizardSupport {
         if (model == null || (!model.hasCells() && !model.hasSubstrates())) {
             return;
         }
-        boolean go = Dialogs.showConfirmDialog(title, "Preview the results in an interactive viewer?");
+        boolean go = Dialogs.showYesNoDialog(title, "Preview the results in an interactive viewer?");
         if (!go) {
             return;
         }

@@ -13,16 +13,21 @@ import java.util.List;
  * unary    := ('-' | '+')? primary
  * primary  := NUMBER
  *           | IDENT ( '(' args ')' )?      // identifier or function call
+ *           | '[' ... ']'                  // bracketed identifier (any channel name)
  *           | '(' expr ')'
  * args     := expr (',' expr)*
  * </pre>
  *
  * <p>Built-in function names ({@link Expression.BuiltinFunction}) take precedence over channel
  * identifiers — using {@code log} or {@code clip} as a substrate name in the image will produce
- * a parse error when the expression that names them is parsed.
+ * a parse error when the expression that names them is parsed. To reference such a channel (or any
+ * channel whose name has a space or other punctuation), wrap it in square brackets:
+ * {@code [DAPI nuclei]}, {@code [Channel 0]}, {@code [log]}. The bracketed text is taken verbatim
+ * (trimmed of surrounding whitespace) as the identifier name; a {@code ]} cannot appear in a name.
  *
- * <p>Whitespace is permitted anywhere except inside numeric literals. Identifier names follow
- * Java's identifier rules (letter or underscore, then letter/digit/underscore).
+ * <p>Whitespace is permitted anywhere except inside numeric literals. Bare identifier names follow
+ * Java's identifier rules (letter or underscore, then letter/digit/underscore); bracketed names may
+ * contain anything except {@code ]}.
  *
  * <p>Errors throw {@link ExpressionParseException} with a 1-based column.
  */
@@ -124,6 +129,9 @@ public final class ExpressionParser {
         if (isDigit(c) || c == '.') {
             return parseNumber();
         }
+        if (c == '[') {
+            return parseBracketedIdentifier();
+        }
         if (isIdentStart(c)) {
             return parseIdentifierOrCall();
         }
@@ -203,6 +211,27 @@ public final class ExpressionParser {
                         name + "() takes " + fn.arity() + " argument(s), got " + args.size(), start + 1);
             }
             return new Expression.FunctionCall(fn, args);
+        }
+        return new Expression.IdentifierRef(name);
+    }
+
+    /**
+     * Parse a bracketed identifier {@code [any channel name]}. Everything up to the closing
+     * {@code ]} is the literal channel name (trimmed); a bracketed name is always a plain channel
+     * reference, never a function call, so a builtin name like {@code [log]} resolves to a channel.
+     */
+    private Expression parseBracketedIdentifier() {
+        int open = pos;
+        pos++; // consume '['
+        int start = pos;
+        while (!atEnd() && src.charAt(pos) != ']') pos++;
+        if (atEnd()) {
+            throw new ExpressionParseException("Unterminated '[' — expected a closing ']'", open + 1);
+        }
+        String name = src.substring(start, pos).trim();
+        pos++; // consume ']'
+        if (name.isEmpty()) {
+            throw new ExpressionParseException("Empty channel name in '[]'", open + 1);
         }
         return new Expression.IdentifierRef(name);
     }

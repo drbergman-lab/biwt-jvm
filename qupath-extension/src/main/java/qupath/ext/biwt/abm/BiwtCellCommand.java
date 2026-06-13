@@ -79,6 +79,10 @@ public final class BiwtCellCommand {
         CellInputs inputs = promptForInputs();
         if (inputs == null) return;
 
+        // The options dialog was non-modal — make sure the user didn't switch images mid-wizard
+        // before we read detections from the (captured) image.
+        if (!WizardSupport.confirmSameImage(qupath, imageData, TITLE)) return;
+
         CellPlacementResult result = placeWithUser(imageData, inputs);
         if (result == null) return;
 
@@ -120,7 +124,9 @@ public final class BiwtCellCommand {
         Stage dialog = new Stage();
         dialog.setTitle(TITLE);
         dialog.initOwner(qupath == null ? null : qupath.getStage());
-        dialog.initModality(Modality.APPLICATION_MODAL);
+        // Non-modal so the user can pan/zoom the image while the wizard is open; run() re-checks
+        // the active image hasn't changed before placing cells.
+        dialog.initModality(Modality.NONE);
 
         CheckBox volumeCheck = new CheckBox("Include volume column (estimated from segmented area)");
 

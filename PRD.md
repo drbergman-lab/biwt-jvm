@@ -291,6 +291,16 @@ The wizard runs as a sequence of modal dialogs on the JavaFX thread:
 
 - The wizard never blocks the JavaFX thread on pixel reads.
 - The image can be panned / zoomed while sampling runs.
+- The wizard step dialogs (parameters, substrate definition, save target) are non-modal, so the
+  user can pan / zoom the source image while they are open. Switching the *active image* mid-wizard
+  is caught before committing (the wizard aborts with an error rather than sampling the wrong image).
+- The plan-confirmation screen (computed grid + PhysiCell domain), the substrate-definition dialog,
+  and the Build wizard's save-target dialog each carry a **Back** button that returns to the previous
+  custom screen with state preserved: the substrate list, the entered voxel size, and a browsed
+  output folder survive a Back/forward round-trip. Back returns to the parameters screen, re-running
+  the domain picker going forward. The domain picker itself (a QuPath choice dialog) and the native
+  file chooser stay plain OK/Cancel — they can't host a Back button. The Cell wizard has a single
+  screen and so has no Back.
 - Canceling at any step writes nothing.
 - Errors raised from `core` (no calibration, non-rectangular ROI, non-square
   pixels, duplicate substrate name) become `Dialogs.showErrorMessage` calls
@@ -481,9 +491,12 @@ PhysiCell.
   the box's prompt text. Unparseable input is treated as empty and flagged inline; degenerate ranges
   don't divide by zero.
 - **Zoom.** `xmin/xmax/ymin/ymax` boxes around the plot pin the visible world rectangle; empty uses
-  the full domain bound for that side. Commit on Enter or focus-loss; `min ≥ max` falls back.
+  the full domain bound for that side. Commit on Enter or focus-loss; `min ≥ max` falls back. The
+  heatmap and cells are clipped to that window rectangle, so narrowing a single axis is a true crop.
 - **Coordinate frame.** The world→screen transform uses equal x/y scale (letterbox) and flips y, so
-  the largest µm-y is at the top of the plot (tissue right-side-up).
+  the largest µm-y is at the top of the plot (tissue right-side-up). Because the scale is equal on
+  both axes, zooming one axis alone on a non-square domain yields a narrow band (a crop, not a
+  stretch); tighten both axes to magnify a region while keeping disks circular.
 - **Entry points.** *Build initial conditions…*, *Sample substrates…*, and *Place cells…* each offer
   "Preview results" on success, opening the viewer on the in-memory results (no file parsing). A
   standalone *Extensions → BIWT → View results…* loads a saved substrates or cells CSV (and its
@@ -565,6 +578,10 @@ the user explore without code changes.
     `B`, `DAPI`, `FITC`.
   - Deconvolved channel names — `H`, `E`, `Residual` for an H&E image.
   - Built-in transforms: `OD_R`, `OD_G`, `OD_B`, `OD_sum`.
+  - A channel whose name has a space or other punctuation (e.g. an unnamed `Channel 0`, or
+    `DAPI nuclei`), or that collides with a builtin function name, is referenced by wrapping it in
+    square brackets: `[Channel 0]`, `[DAPI nuclei]`, `[log]`. Bare identifiers are unchanged. The
+    palette "insert" buttons emit the bracketed form automatically when needed.
 - Supported operators: `+ - * / ^` and grouping with parentheses.
 - Supported functions: `log`, `log10`, `exp`, `sqrt`, `abs`, `min`, `max`,
   `clip(value, lo, hi)`.
@@ -607,6 +624,9 @@ arrays (same pattern as `OpticalDensitySumTransform`).
   pixels.
 - An unknown identifier (`X`) shows "Unknown channel `X`" inline; the
   Add button stays disabled.
+- `[Channel 0]` (or any spaced/punctuated channel name) parses to a single
+  channel reference and resolves against the same extractor; an unterminated
+  `[` is flagged inline.
 - `clip(H, 0, 1.5)` clamps negative-H pixels to 0 and high values to 1.5.
 - The committed substrate name + expression survives a round-trip through
   the save-state once that lands.

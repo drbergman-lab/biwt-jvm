@@ -121,4 +121,54 @@ class ExpressionParserTest {
     void rejectsBadExponent() {
         assertThrows(ExpressionParseException.class, () -> ExpressionParser.parse("1.5e"));
     }
+
+    @Test
+    void parsesBracketedNameWithSpace() {
+        Expression e = ExpressionParser.parse("[DAPI nuclei]");
+        assertEquals(new Expression.IdentifierRef("DAPI nuclei"), e);
+        assertEquals(Set.of("DAPI nuclei"), e.referencedIdentifiers());
+    }
+
+    @Test
+    void bracketedNamesComposeWithArithmetic() {
+        Expression e = ExpressionParser.parse("0.5*[Channel 0] + [Channel 2]");
+        assertEquals(Set.of("Channel 0", "Channel 2"), e.referencedIdentifiers());
+    }
+
+    @Test
+    void bracketedNameTrimsSurroundingWhitespace() {
+        Expression e = ExpressionParser.parse("[  Channel 0  ]");
+        assertEquals(new Expression.IdentifierRef("Channel 0"), e);
+    }
+
+    @Test
+    void bracketedNameEvaluatesAgainstRegisteredChannel() {
+        Expression e = ExpressionParser.parse("[Channel 0] + 1");
+        ChannelEnvironment env = new ChannelEnvironment().register("Channel 0", new float[] {4f, 5f});
+        float[] dst = new float[2];
+        e.evaluate(env, dst, 2);
+        assertArrayEquals(new float[] {5f, 6f}, dst, 1e-6f);
+    }
+
+    @Test
+    void bracketedNameMayCollideWithBuiltinFunctionName() {
+        // A channel literally named "log" is reachable via brackets (the bare form would parse the
+        // builtin and demand parentheses).
+        Expression e = ExpressionParser.parse("[log]");
+        assertEquals(new Expression.IdentifierRef("log"), e);
+    }
+
+    @Test
+    void rejectsUnterminatedBracket() {
+        var ex = assertThrows(ExpressionParseException.class,
+                () -> ExpressionParser.parse("[Channel 0"));
+        assertTrue(ex.getMessage().contains("Unterminated"), "got: " + ex.getMessage());
+    }
+
+    @Test
+    void rejectsEmptyBracket() {
+        var ex = assertThrows(ExpressionParseException.class,
+                () -> ExpressionParser.parse("[]"));
+        assertTrue(ex.getMessage().contains("Empty"), "got: " + ex.getMessage());
+    }
 }

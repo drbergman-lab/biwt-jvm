@@ -1,5 +1,107 @@
 # progress.md — biwt-jvm Session Journal
 
+## Session: Back navigation in the wizards (2026-06-12)
+
+### Goal
+
+Let the user step back to an earlier wizard screen (fix a voxel size, add a forgotten substrate)
+without canceling and losing entered state.
+
+### Key design decisions
+
+**Back lives on our windows; remaining built-ins stay forward-only.** A built-in JavaFX OK/Cancel
+dialog can't carry an extra button, so to give a screen a Back button we render it as our own
+`Stage`. The plan-confirmation screen (computed grid + PhysiCell domain) was the obvious candidate —
+it's where the user first sees the consequence of the voxel size — so it moved off
+`Dialogs.showConfirmDialog` into `WizardSupport.confirmWithBack` (Back / Cancel / Proceed). To avoid
+the code-like look of an all-monospace blob, the helper takes the prose summary and the domain block
+separately: prose renders in the UI font, the x/y/z bounds sit in a bordered monospaced "data card"
+so the columns align, with a bold "Proceed with these settings?" prompt. Back buttons now appear on: the plan-confirmation
+screen, the substrate-definition dialog, and the build wizard's save-target dialog. Back hops to the
+previous *our-window* (always the params screen for the confirm/substrate screens), re-running the
+remaining built-in gate (the domain picker, a `showChoiceDialog`) on the way forward. The params
+screens have no Back button of their own — they're the first custom window — but they are Back
+*targets*, re-opened pre-filled with the prior values. The initial reminder confirm, the domain
+picker, and the native file chooser stay plain OK/Cancel.
+
+**A tiny `Nav<T>` instead of a wizard framework.** Each navigable dialog returns
+`Nav.next(value) | Nav.back() | Nav.cancel()` (was value-or-`null`). Each command's `run()` became a
+hand-rolled phase machine (`enum Phase` + `while/switch`) rather than a generic engine — with only
+two commands and 2–3 custom screens each, explicit phases read far clearer than a step-list driver,
+and they handle the conditional substrate step (on/off decided at the params screen) without a
+dynamic step list. Cancel of a built-in gate still aborts the whole wizard (unchanged behavior);
+only the Back *button* navigates.
+
+**State preservation.** `SubstrateDialog.show` gained an `initial` list (re-seeds the committed
+substrates + list view); `promptForInputs`/`promptForPlanInputs` take a `prior` to pre-fill fields;
+`chooseSaveTarget` takes a `prior` to keep a browsed output folder. When substrates are toggled off
+on a back-and-forward pass, the build wizard clears the stale specs/transforms/channelSet in the
+DOMAIN phase so a no-substrate build doesn't carry a previous visit's substrates.
+
+**Cell wizard left linear.** It has a single custom screen (options) with nothing before it but the
+detection check, so there's nowhere to go back to — no Back added.
+
+## Session: Non-modal wizard + dialog polish (2026-06-12)
+
+### Goal
+
+Let the user pan/zoom the QuPath image while the wizard is open, and fix confirmation dialogs whose
+"Cancel" button read wrong.
+
+### Key design decisions
+
+**Non-modal step dialogs + an image-swap guard.** JavaFX modality is all-or-nothing per window —
+there is no "allow viewer pan/zoom but block other input" mode, and QuPath has no "lock the current
+image" API. So the five custom step dialogs (params + substrate definition in the substrate wizard,
+params + save-target in the build wizard, options in the cell wizard) switch from
+`APPLICATION_MODAL`/`WINDOW_MODAL` to `Modality.NONE`. `showAndWait()` is kept: its nested event
+loop keeps every window live while preserving the sequential `run()` flow, so no threading change.
+The one hazard a non-modal dialog opens up — switching the *active image* mid-wizard — is caught by
+`WizardSupport.confirmSameImage`, called right before each command commits (image identity check;
+aborts with an error on mismatch). The ABM domain is already snapshotted to pixel bounds at the
+domain-selection step, so moving/deleting the annotation afterward can't corrupt the output —
+image-swap is the only thing worth guarding. The progress dialogs were already `Modality.NONE`.
+
+**Yes/No for post-export offers.** The two prompts that fire *after* a successful export — "update a
+PhysiCell config?" and "preview the results?" — were `showConfirmDialog` (OK/**Cancel**), but there
+is nothing to cancel at that point; they're plain yes/no questions. Switched to
+`Dialogs.showYesNoDialog`. The four wizard-step gates ("Continue?"/"Proceed?") keep OK/Cancel —
+there, Cancel genuinely aborts the wizard.
+
+## Session: Viewer zoom + spaced channel names (2026-06-12)
+
+### Goal
+
+Two v0.5.0 defects: (1) the viewer's `xmin/xmax/ymin/ymax` boxes appeared inert, and (2) the
+channel-math parser couldn't reference a channel whose name has a space (an unnamed `Channel 0`,
+or e.g. `DAPI nuclei`).
+
+### Key design decisions
+
+**Zoom: clip to the view window, keep equal aspect.** Root cause was not the transform but the
+draw: `WorldToScreen` letterboxes with one equal x/y scale, so on a tall-thin domain the **y-axis
+governs the scale**; narrowing only `xmin/xmax` left the scale unchanged, and `redraw()` drew the
+heatmap/cells at the *full grid extent* relying on the Canvas to clip — so an x-only window just
+re-centered the same band by a few pixels. Fix is GUI-local: `redraw()` now sets a rectangular clip
+to the view-window's screen rect (from the resolved view via the transform), draws inside it, and
+strokes the plot border around that window. Equal aspect is kept (PRD invariant, disks stay round),
+so an x-only zoom on a tall domain legitimately yields a thin vertical strip — a *true crop*; tighten
+y as well to magnify. Considered stretching the window to fill the plot (independent x/y scale) and
+rejected it: it turns cells into ellipses and breaks the equal-scale invariant.
+
+**Spaces: bracketed identifiers `[name]` in the grammar.** `ExpressionParser` identifiers follow
+Java rules, so a space terminated the name and the palette "insert" buttons emitted unparseable raw
+labels. Added a `[...]` form: inside brackets the parser reads to the closing `]`, trims, and emits
+one `IdentifierRef` whose name is the inner text (already the extractor-map key, so resolution and
+case-insensitive matching are unchanged). Square brackets chosen over backticks/double-quotes — no
+collision with any math token (`+ - * / ^ ( ) ,`), spreadsheet/SQL-familiar, and they also let you
+reference a channel that collides with a builtin name (`[log]`). A `]` inside a name is unsupported
+(rare). The palette now emits the bracketed form for any label that isn't already a bare identifier.
+
+### Open questions
+
+- None blocking. A name containing `]` is unsupported; revisit only if a real image needs it.
+
 ## Session: Results Visualizer (2026-06-09)
 
 ### Goal

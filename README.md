@@ -204,6 +204,15 @@ The build is two modules:
 - [x] **Shared, persistent output folder** — all wizards default the save location to the last folder you exported to (a preference that survives restarts, for processing images serially), else the current image's directory, else home.
 - [x] **101 unit tests** — 23 new in `:core` (`…core.viz`: CellGeometry, ColorMap, DataRange, WorldToScreen, ResultsCsvLoader) on top of the existing 78.
 
+### Completed (v0.5.1 — viewer & wizard fixes)
+
+- [x] **Viewer zoom is a true crop** — the `xmin/xmax/ymin/ymax` boxes now clip the heatmap and cells to the requested window (previously, on a non-square domain the equal-scale letterbox made a single-axis zoom only re-center the band). Equal aspect is kept, so tighten both axes to magnify with disks staying circular.
+- [x] **Channel names with spaces in expressions** — reference a channel whose name has a space or punctuation (e.g. an unnamed `Channel 0`, `DAPI nuclei`), or that collides with a builtin name (`[log]`), by wrapping it in square brackets; the palette buttons emit the bracketed form automatically. Bare identifiers are unchanged.
+- [x] **Non-modal wizard dialogs** — the parameter, substrate, save, and confirmation screens no longer block the QuPath viewer, so the image can be panned/zoomed while the wizard is open. Switching the active image mid-wizard is caught before committing.
+- [x] **Back navigation** — the plan-confirmation, substrate-definition, and Build-wizard save screens carry a **Back** button that returns to the parameters screen with state preserved (substrate list, voxel size, browsed folder). The Cell wizard (single screen) is unchanged.
+- [x] **Dialog polish** — post-export offers (config patch, results preview) use Yes/No instead of OK/Cancel; the plan-confirmation screen renders the prose and the PhysiCell domain bounds as a tidy monospaced data card.
+- [x] **108 unit tests** — 7 new channel-math parser tests in `:core` for bracketed identifiers.
+
 ### Planned (post-MVP)
 
 - [ ] **User-defined origin** — third option that prompts for (x₀, y₀) µm explicitly.

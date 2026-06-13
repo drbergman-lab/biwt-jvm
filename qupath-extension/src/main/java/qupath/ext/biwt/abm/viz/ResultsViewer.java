@@ -316,7 +316,20 @@ public final class ResultsViewer {
             return; // degenerate view rectangle — nothing to draw
         }
 
-        // Substrate heatmap: map the full grid extent onto screen; the Canvas clips to its bounds.
+        // Screen rectangle of the visible world window. Equal-scale letterboxing centers this rect
+        // in the canvas; clipping the heatmap and cells to it is what makes the limit boxes crop —
+        // without it, a narrowed x window (when y governs the scale) would just re-center the band.
+        double wx0 = t.screenX(view[0]);
+        double wx1 = t.screenX(view[1]);
+        double wyTop = t.screenY(view[3]);
+        double wyBot = t.screenY(view[2]);
+
+        gc.save();
+        gc.beginPath();
+        gc.rect(wx0, wyTop, wx1 - wx0, wyBot - wyTop);
+        gc.clip();
+
+        // Substrate heatmap: map the full grid extent onto screen; the clip crops to the window.
         if (heatmap != null) {
             VoxelGrid grid = model.grid();
             double gx0 = t.screenX(grid.xMinMicrons());
@@ -330,11 +343,12 @@ public final class ResultsViewer {
         if (model.hasCells() && showCellsCheck.isSelected()) {
             drawCells(gc, t, w, h);
         }
+        gc.restore();
 
-        // Plot border.
+        // Plot border around the visible window.
         gc.setStroke(Color.gray(0.5));
         gc.setLineWidth(1);
-        gc.strokeRect(0.5, 0.5, w - 1, h - 1);
+        gc.strokeRect(wx0 + 0.5, wyTop + 0.5, (wx1 - wx0) - 1, (wyBot - wyTop) - 1);
     }
 
     private void drawCells(GraphicsContext gc, WorldToScreen t, double w, double h) {

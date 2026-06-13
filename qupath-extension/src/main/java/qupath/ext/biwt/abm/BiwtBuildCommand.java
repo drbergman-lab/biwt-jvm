@@ -89,91 +89,143 @@ public final class BiwtBuildCommand {
                         + "from existing classified detections (segment + classify first). Continue?");
         if (!go) return;
 
-        BuildInputs inputs = promptForInputs(imageData);
-        if (inputs == null) return;
+        // Phase machine so the substrate and save screens' Back buttons can step back with state
+        // preserved. The domain picker + plan confirmation are QuPath OK/Cancel gates (Cancel aborts).
+        BuildInputs inputs = null;                       // preserved across Back
+        List<CommittedSubstrate> priorSubs = List.of();  // preserved across Back
+        SaveTarget priorTarget = null;                   // preserved across Back
 
-        AbmDomain domain = WizardSupport.chooseDomain(qupath, imageData, TITLE);
-        if (domain == null) return;
-
-        // Plan substrates (if any) and resolve the PhysiCell domain to emit.
+        AbmDomain domain = null;
         SamplingPlan plan = null;
-        PhysiCellDomain physiCellDomain;
-        if (inputs.substrates()) {
-            try {
-                plan = sampler.plan(domain, inputs.voxelMicrons(), ORIGIN);
-            } catch (DomainException d) {  // e.g. non-square pixels
-                Dialogs.showErrorMessage(TITLE, d.getMessage());
-                return;
-            }
-            physiCellDomain = plan.physiCellDomain();
-        } else {
-            physiCellDomain = PhysiCellDomain.ofAnnotation(domain, ORIGIN);
-        }
-
-        // Confirm — show what will be built and the PhysiCell domain bounds.
-        String planLine = inputs.substrates()
-                ? String.format("Substrates: %d × %d voxels (effective step %.4g µm)%n",
-                        plan.grid().nx(), plan.grid().ny(), plan.effectiveStepMicrons())
-                : "";
-        if (!Dialogs.showConfirmDialog(TITLE, String.format(
-                "Source: %s%n%s%s%nPhysiCell domain:%n%s%n%nProceed?",
-                domain.sourceDescription(),
-                planLine,
-                inputs.cells() ? "Cells: from classified detections in the domain" : "",
-                physiCellDomain.summary()))) {
-            return;
-        }
-
-        // Define substrates (reuse the substrate dialog) if requested.
+        PhysiCellDomain physiCellDomain = null;
+        ChannelSet channelSet = null;
         List<SubstrateSpec> specs = new ArrayList<>();
         List<ColorTransforms.ColorTransform> transforms = new ArrayList<>();
-        ChannelSet channelSet = null;
-        if (inputs.substrates()) {
-            channelSet = BiwtAbmCommand.buildChannelSet(imageData);
-            // Substrates are optional even here: Finish works with an empty list, so the user can
-            // reach this step and decide to add none (e.g. just cells + the domain).
-            SubstrateChoices choices = BiwtAbmCommand.SubstrateDialog.show(qupath.getStage(), channelSet, true);
-            if (choices == null) return;  // cancelled (distinct from "finished with none")
-            for (int i = 0; i < choices.substrates().size(); i++) {
-                CommittedSubstrate cs = choices.substrates().get(i);
-                transforms.add(cs.transform());
-                specs.add(new SubstrateSpec(cs.name(), i));
+
+        Phase phase = Phase.PARAMS;
+        while (true) {
+            switch (phase) {
+                case PARAMS -> {
+                    inputs = promptForInputs(imageData, inputs);
+                    if (inputs == null) return;
+                    phase = Phase.DOMAIN;
+                }
+                case DOMAIN -> {
+                    domain = WizardSupport.chooseDomain(qupath, imageData, TITLE);
+                    if (domain == null) return;  // cancel of the picker aborts
+
+                    // Plan substrates (if any) and resolve the PhysiCell domain to emit.
+                    if (inputs.substrates()) {
+                        try {
+                            plan = sampler.plan(domain, inputs.voxelMicrons(), ORIGIN);
+                        } catch (DomainException d) {  // e.g. non-square pixels
+                            Dialogs.showErrorMessage(TITLE, d.getMessage());
+                            return;
+                        }
+                        physiCellDomain = plan.physiCellDomain();
+                    } else {
+                        plan = null;
+                        physiCellDomain = PhysiCellDomain.ofAnnotation(domain, ORIGIN);
+                        // Substrates disabled on this pass — discard any from a prior visit.
+                        specs = new ArrayList<>();
+                        transforms = new ArrayList<>();
+                        channelSet = null;
+                    }
+
+                    // Confirm — show what will be built and the PhysiCell domain bounds.
+                    StringBuilder summary = new StringBuilder("Source: ").append(domain.sourceDescription());
+                    if (inputs.substrates()) {
+                        summary.append(String.format("%nSubstrates: %d × %d voxels (effective step %.4g µm)",
+                                plan.grid().nx(), plan.grid().ny(), plan.effectiveStepMicrons()));
+                    }
+                    if (inputs.cells()) {
+                        summary.append("\nCells: from classified detections in the domain");
+                    }
+                    Nav<Boolean> conf = WizardSupport.confirmWithBack(
+                            qupath == null ? null : qupath.getStage(), TITLE,
+                            summary.toString(), physiCellDomain.summary());
+                    if (conf.isCancel()) return;
+                    if (conf.isBack()) { phase = Phase.PARAMS; continue; }
+                    phase = inputs.substrates() ? Phase.SUBSTRATES : Phase.SAVE;
+                }
+                case SUBSTRATES -> {
+                    channelSet = BiwtAbmCommand.buildChannelSet(imageData);
+                    // Substrates are optional even here: Finish works with an empty list, so the
+                    // user can reach this step and decide to add none (e.g. just cells + the domain).
+                    Nav<SubstrateChoices> nav = BiwtAbmCommand.SubstrateDialog.show(
+                            qupath.getStage(), channelSet, true, priorSubs);
+                    if (nav.isCancel()) return;
+                    if (nav.isBack()) { phase = Phase.PARAMS; continue; }
+                    priorSubs = nav.value().substrates();
+                    specs = new ArrayList<>();
+                    transforms = new ArrayList<>();
+                    for (int i = 0; i < priorSubs.size(); i++) {
+                        CommittedSubstrate cs = priorSubs.get(i);
+                        transforms.add(cs.transform());
+                        specs.add(new SubstrateSpec(cs.name(), i));
+                    }
+                    phase = Phase.SAVE;
+                }
+                case SAVE -> {
+                    // Use the *effective* outputs (substrates may have been finished with none).
+                    Nav<SaveTarget> nav = chooseSaveTarget(
+                            imageData, !specs.isEmpty(), inputs.cells(), priorTarget);
+                    if (nav.isCancel()) return;
+                    if (nav.isBack()) {
+                        phase = inputs.substrates() ? Phase.SUBSTRATES : Phase.PARAMS;
+                        continue;
+                    }
+                    SaveTarget target = nav.value();
+                    priorTarget = target;
+
+                    // Dialogs were non-modal — make sure the user didn't switch images mid-wizard.
+                    if (!WizardSupport.confirmSameImage(qupath, imageData, TITLE)) return;
+
+                    runBuildTask(imageData, domain, plan, physiCellDomain, inputs,
+                            channelSet, transforms, specs, target);
+                    return;
+                }
             }
         }
-
-        // Choose output folder + base name. Use the *effective* outputs (substrates may have been
-        // skipped by finishing the substrate dialog with none).
-        SaveTarget target = chooseSaveTarget(imageData, !specs.isEmpty(), inputs.cells());
-        if (target == null) return;
-
-        runBuildTask(imageData, domain, plan, physiCellDomain, inputs,
-                channelSet, transforms, specs, target);
     }
+
+    /** Wizard phases for {@link #run()}; Back from substrates → params, from save → substrates/params. */
+    private enum Phase { PARAMS, DOMAIN, SUBSTRATES, SAVE }
 
     // ---------------- parameters dialog ----------------
 
-    private BuildInputs promptForInputs(ImageData<BufferedImage> imageData) {
+    private BuildInputs promptForInputs(ImageData<BufferedImage> imageData, BuildInputs prior) {
         AtomicReference<BuildInputs> ref = new AtomicReference<>(null);
+        CellPlacementOptions priorCell = prior == null ? null : prior.cellOptions();
 
         Stage dialog = new Stage();
         dialog.setTitle(TITLE);
         dialog.initOwner(qupath == null ? null : qupath.getStage());
-        dialog.initModality(Modality.APPLICATION_MODAL);
+        // Non-modal so the user can pan/zoom the image while the wizard is open; run() re-checks
+        // the active image hasn't changed before building.
+        dialog.initModality(Modality.NONE);
 
         CheckBox substrateCheck = new CheckBox("Build substrates");
-        substrateCheck.setSelected(true);
+        substrateCheck.setSelected(prior == null ? true : prior.substrates());
         CheckBox cellCheck = new CheckBox("Build cells");
-        cellCheck.setSelected(!imageData.getHierarchy().getDetectionObjects().isEmpty());
+        cellCheck.setSelected(prior == null
+                ? !imageData.getHierarchy().getDetectionObjects().isEmpty()
+                : prior.cells());
 
-        TextField stepField = new TextField(Double.toString(DEFAULT_STEP_MICRONS));
+        TextField stepField = new TextField(Double.toString(
+                prior == null || prior.voxelMicrons() <= 0 ? DEFAULT_STEP_MICRONS : prior.voxelMicrons()));
         stepField.setPrefColumnCount(8);
         stepField.disableProperty().bind(substrateCheck.selectedProperty().not());
 
         CheckBox volumeCheck = new CheckBox("Include cell volume column (from segmented area)");
+        volumeCheck.setSelected(priorCell != null && priorCell.includeVolume());
         volumeCheck.disableProperty().bind(cellCheck.selectedProperty().not());
         CheckBox unclassifiedCheck = new CheckBox("Place unclassified detections as type:");
+        unclassifiedCheck.setSelected(priorCell != null && priorCell.unclassifiedTypeName() != null);
         unclassifiedCheck.disableProperty().bind(cellCheck.selectedProperty().not());
-        TextField unclassifiedField = new TextField("unclassified");
+        TextField unclassifiedField = new TextField(
+                priorCell != null && priorCell.unclassifiedTypeName() != null
+                        ? priorCell.unclassifiedTypeName() : "unclassified");
         unclassifiedField.setPrefColumnCount(12);
         unclassifiedField.disableProperty().bind(
                 cellCheck.selectedProperty().not().or(unclassifiedCheck.selectedProperty().not()));
@@ -263,15 +315,19 @@ public final class BiwtBuildCommand {
         Path domainXml()     { return folder.resolve(domainName); }
     }
 
-    private SaveTarget chooseSaveTarget(ImageData<BufferedImage> imageData, boolean hasSubstrates, boolean hasCells) {
-        AtomicReference<SaveTarget> ref = new AtomicReference<>(null);
+    private Nav<SaveTarget> chooseSaveTarget(ImageData<BufferedImage> imageData, boolean hasSubstrates,
+                                             boolean hasCells, SaveTarget prior) {
+        AtomicReference<Nav<SaveTarget>> ref = new AtomicReference<>(Nav.cancel());
 
         Stage dialog = new Stage();
         dialog.setTitle(TITLE + " — save outputs");
         dialog.initOwner(qupath == null ? null : qupath.getStage());
-        dialog.initModality(Modality.APPLICATION_MODAL);
+        dialog.initModality(Modality.NONE);
 
-        TextField folderField = new TextField(WizardSupport.defaultOutputFolder(imageData));
+        // Prefer a folder the user already browsed to on a prior pass (Back re-entry).
+        String startFolder = prior != null ? prior.folder().toString()
+                : WizardSupport.defaultOutputFolder(imageData);
+        TextField folderField = new TextField(startFolder);
         folderField.setPrefColumnCount(28);
         folderField.setEditable(false);
         Button browse = new Button("Browse…");
@@ -308,6 +364,7 @@ public final class BiwtBuildCommand {
         Label warning = new Label();
         warning.setStyle("-fx-text-fill: #cc0000;");
 
+        Button backButton = new Button("Back");
         Button okButton = new Button("Save");
         Button cancelButton = new Button("Cancel");
         okButton.setDefaultButton(true);
@@ -324,11 +381,12 @@ public final class BiwtBuildCommand {
             if (domain.isEmpty())              { warning.setText("Enter a domain file name."); return; }
             Path folderPath = Path.of(folder);
             WizardSupport.rememberOutputDir(folderPath);
-            ref.set(new SaveTarget(folderPath,
-                    hasSubstrates ? sub : null, hasCells ? cell : null, domain));
+            ref.set(Nav.next(new SaveTarget(folderPath,
+                    hasSubstrates ? sub : null, hasCells ? cell : null, domain)));
             dialog.close();
         });
-        cancelButton.setOnAction(e -> dialog.close());
+        backButton.setOnAction(e -> { ref.set(Nav.back()); dialog.close(); });
+        cancelButton.setOnAction(e -> { ref.set(Nav.cancel()); dialog.close(); });
 
         GridPane form = new GridPane();
         form.setHgap(10);
@@ -346,7 +404,7 @@ public final class BiwtBuildCommand {
         if (hasCells)      { form.add(new Label("Cells:"), 0, row); form.add(cellField, 1, row++); }
         form.add(new Label("Domain:"), 0, row); form.add(domainField, 1, row++);
 
-        HBox buttons = new HBox(10, cancelButton, okButton);
+        HBox buttons = new HBox(10, backButton, cancelButton, okButton);
         buttons.setAlignment(Pos.CENTER_RIGHT);
         VBox root = new VBox(12, form, warning, buttons);
         root.setPadding(new Insets(16));

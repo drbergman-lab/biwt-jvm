@@ -111,77 +111,104 @@ public final class BiwtAbmCommand {
             return;
         }
 
-        // Step 1: normalization reminder.
+        // Step 1: normalization reminder (forward gate; no Back).
         boolean go = Dialogs.showConfirmDialog(TITLE,
                 "Ensure all image normalization is complete before proceeding.\n\n"
                         + "BIWT samples raw channel intensities and makes no assumptions about\n"
                         + "color, stain separation, or background subtraction. Continue?");
         if (!go) return;
 
-        // Steps 2 & 3: plan = step-size input + detect domain + reconcile.
-        SamplingPlan plan = planWithUser(imageData);
-        if (plan == null) return;
+        // Remaining steps run as a small phase machine so the substrate dialog's Back button can
+        // return to the parameters screen with its values preserved. The domain picker and plan
+        // confirmation are QuPath OK/Cancel dialogs (forward gates): Cancel aborts the wizard.
+        PlanInputs inputs = null;                       // preserved across Back
+        List<CommittedSubstrate> priorSubs = List.of(); // preserved across Back
+        SamplingPlan plan = null;
+        Phase phase = Phase.PARAMS;
+        while (true) {
+            switch (phase) {
+                case PARAMS -> {
+                    inputs = promptForPlanInputs(inputs);
+                    if (inputs == null) return;         // cancel
+                    phase = Phase.DOMAIN;
+                }
+                case DOMAIN -> {
+                    AbmDomain domain = WizardSupport.chooseDomain(qupath, imageData, TITLE);
+                    if (domain == null) return;         // cancel of the picker aborts
+                    try {
+                        plan = sampler.plan(domain, inputs.stepMicrons(), inputs.origin());
+                    } catch (DomainException d) {        // e.g. non-square pixels
+                        Dialogs.showErrorMessage(TITLE, d.getMessage());
+                        return;
+                    }
+                    Nav<Boolean> conf = WizardSupport.confirmWithBack(
+                            qupath == null ? null : qupath.getStage(), TITLE,
+                            planSummary(plan), plan.physiCellDomain().summary());
+                    if (conf.isCancel()) return;
+                    if (conf.isBack()) { phase = Phase.PARAMS; continue; }
+                    phase = Phase.SUBSTRATES;
+                }
+                case SUBSTRATES -> {
+                    ChannelSet channelSet = buildChannelSet(imageData);
+                    Nav<SubstrateChoices> nav =
+                            SubstrateDialog.show(qupath.getStage(), channelSet, false, priorSubs);
+                    if (nav.isCancel()) return;
+                    if (nav.isBack()) { phase = Phase.PARAMS; continue; }
+                    SubstrateChoices substrates = nav.value();
+                    priorSubs = substrates.substrates();
+                    if (substrates.substrates().isEmpty()) return; // Finish is disabled when empty
 
-        // Step 4: confirmation showing nx × ny and effective step.
-        if (!confirmPlan(plan)) return;
+                    // Save target is a native file chooser (no Back). Cancel aborts.
+                    Path outPath = chooseOutputPath(imageData);
+                    if (outPath == null) return;
 
-        // Step 5: build the channel choices (raw + deconvolved if H&E + OD-sum + Expression…)
-        // and prompt for substrates.
-        ChannelSet channelSet = buildChannelSet(imageData);
-        SubstrateChoices substrates = SubstrateDialog.show(qupath.getStage(), channelSet);
-        if (substrates == null || substrates.substrates().isEmpty()) return;
+                    // Dialogs were non-modal — make sure the user didn't switch images mid-wizard.
+                    if (!WizardSupport.confirmSameImage(qupath, imageData, TITLE)) return;
 
-        // Step 6: file-save chooser.
-        Path outPath = chooseOutputPath(imageData);
-        if (outPath == null) return;
+                    // Build the sampling server: one channel per substrate, in user-submitted order.
+                    List<ColorTransforms.ColorTransform> finalTransforms =
+                            new ArrayList<>(substrates.substrates().size());
+                    List<SubstrateSpec> specs = new ArrayList<>(substrates.substrates().size());
+                    for (int i = 0; i < substrates.substrates().size(); i++) {
+                        CommittedSubstrate cs = substrates.substrates().get(i);
+                        finalTransforms.add(cs.transform());
+                        specs.add(new SubstrateSpec(cs.name(), i));
+                    }
+                    ImageServer<BufferedImage> samplingServer =
+                            new TransformedServerBuilder(channelSet.rawServer())
+                                    .applyColorTransforms(finalTransforms)
+                                    .build();
 
-        // Build the sampling server: one channel per substrate, in user-submitted order.
-        List<ColorTransforms.ColorTransform> finalTransforms =
-                new ArrayList<>(substrates.substrates().size());
-        List<SubstrateSpec> specs = new ArrayList<>(substrates.substrates().size());
-        for (int i = 0; i < substrates.substrates().size(); i++) {
-            CommittedSubstrate cs = substrates.substrates().get(i);
-            finalTransforms.add(cs.transform());
-            specs.add(new SubstrateSpec(cs.name(), i));
+                    runSamplingTask(samplingServer, plan, specs, outPath);
+                    return;
+                }
+            }
         }
-        ImageServer<BufferedImage> samplingServer = new TransformedServerBuilder(channelSet.rawServer())
-                .applyColorTransforms(finalTransforms)
-                .build();
-
-        // Step 7: background sampling.
-        runSamplingTask(samplingServer, plan, specs, outPath);
     }
 
-    // ---------------- steps 2 & 3 (plan: step size + detect domain) ----------------
+    /** Wizard phases for {@link #run()}; the substrate screen's Back returns to {@code PARAMS}. */
+    private enum Phase { PARAMS, DOMAIN, SUBSTRATES }
 
-    private SamplingPlan planWithUser(ImageData<BufferedImage> imageData) {
-        PlanInputs inputs = promptForPlanInputs();
-        if (inputs == null) return null;
-
-        AbmDomain domain = WizardSupport.chooseDomain(qupath, imageData, TITLE);
-        if (domain == null) return null;
-
-        try {
-            return sampler.plan(domain, inputs.stepMicrons(), inputs.origin());
-        } catch (DomainException d) {  // e.g. non-square pixels
-            Dialogs.showErrorMessage(TITLE, d.getMessage());
-            return null;
-        }
-    }
+    // ---------------- step: sampling parameters ----------------
 
     /**
      * Custom dialog asking for the step size (µm) and the coordinate-origin convention.
      * Returns null on cancel. Validates that the step is positive before returning.
+     *
+     * @param prior previously entered values to pre-fill (on Back re-entry), or {@code null}
      */
-    private PlanInputs promptForPlanInputs() {
+    private PlanInputs promptForPlanInputs(PlanInputs prior) {
         var resultRef = new java.util.concurrent.atomic.AtomicReference<PlanInputs>(null);
 
         Stage dialog = new Stage();
         dialog.setTitle(TITLE + " — sampling parameters");
         dialog.initOwner(qupath == null ? null : qupath.getStage());
-        dialog.initModality(Modality.APPLICATION_MODAL);
+        // Non-modal so the user can pan/zoom the image while the wizard is open; run() re-checks
+        // the active image hasn't changed before committing.
+        dialog.initModality(Modality.NONE);
 
-        TextField stepField = new TextField(Double.toString(DEFAULT_STEP_MICRONS));
+        TextField stepField = new TextField(
+                Double.toString(prior == null ? DEFAULT_STEP_MICRONS : prior.stepMicrons()));
         stepField.setPrefColumnCount(8);
 
         // (0, 0) sits at the ABM-domain center; the plan-confirmation dialog shows the resulting
@@ -232,23 +259,20 @@ public final class BiwtAbmCommand {
 
     // ---------------- step 4 (plan confirmation) ----------------
 
-    private boolean confirmPlan(SamplingPlan plan) {
-        String message = String.format(
+    /** The plan-confirmation prose: source, grid size, effective step, pixel size (no domain block). */
+    private static String planSummary(SamplingPlan plan) {
+        return String.format(
                 "Source: %s%n"
                         + "Grid:   %d × %d voxels%n"
                         + "Requested step: %.4g µm%n"
                         + "Effective step: %.4g µm%s%n"
-                        + "Pixel size:     %.4g µm%n%n"
-                        + "PhysiCell domain (set these in your config XML):%n%s%n%n"
-                        + "Proceed?",
+                        + "Pixel size:     %.4g µm",
                 plan.domain().sourceDescription(),
                 plan.grid().nx(), plan.grid().ny(),
                 plan.requestedStepMicrons(),
                 plan.effectiveStepMicrons(),
                 effectiveStepNote(plan),
-                plan.domain().pixelWidthMicrons(),
-                plan.physiCellDomain().summary());
-        return Dialogs.showConfirmDialog(TITLE, message);
+                plan.domain().pixelWidthMicrons());
     }
 
     private static String effectiveStepNote(SamplingPlan plan) {
@@ -285,7 +309,7 @@ public final class BiwtAbmCommand {
             options.add(new ChannelChoice(label, transform));
             int band = i;
             extractors.put(label, img -> ChannelMathTransform.readBand(img, band));
-            insertables.add(new InsertableIdentifier(label, label));
+            insertables.add(new InsertableIdentifier(label, insertTextFor(label)));
         }
 
         // Color deconvolution — dropdown entries (prefixed "Deconvolved:") and expression
@@ -306,7 +330,7 @@ public final class BiwtAbmCommand {
                     extractors.put(alias, img -> transform.extractChannel(raw, img, null));
                     insertables.add(new InsertableIdentifier(stainName + " (" + alias + ")", alias));
                 } else {
-                    insertables.add(new InsertableIdentifier(stainName, stainName));
+                    insertables.add(new InsertableIdentifier(stainName, insertTextFor(stainName)));
                 }
             }
         }
@@ -325,6 +349,26 @@ public final class BiwtAbmCommand {
         }
 
         return new ChannelSet(raw, options, extractors, insertables, isRgb);
+    }
+
+    /**
+     * The text a palette button inserts for a channel named {@code name}: the bare name when it is
+     * a legal bare identifier (so {@code R}, {@code OD_sum} insert as-is), else the bracketed form
+     * {@code [name]} so names with spaces or punctuation parse as a single channel reference.
+     */
+    private static String insertTextFor(String name) {
+        return isBareIdentifier(name) ? name : "[" + name + "]";
+    }
+
+    /** True when {@code name} matches the parser's bare-identifier rule (letter/_ then letter/digit/_). */
+    private static boolean isBareIdentifier(String name) {
+        if (name == null || name.isEmpty()) return false;
+        if (!Character.isLetter(name.charAt(0)) && name.charAt(0) != '_') return false;
+        for (int i = 1; i < name.length(); i++) {
+            char c = name.charAt(i);
+            if (!Character.isLetterOrDigit(c) && c != '_') return false;
+        }
+        return true;
     }
 
     /** Common short alias for an H&E stain name, or null if no obvious alias. */
@@ -500,27 +544,33 @@ public final class BiwtAbmCommand {
     /** Wrapper for the substrate dialog's return value. */
     record SubstrateChoices(List<CommittedSubstrate> substrates) {}
 
-    /** Modal dialog: build a list of substrates with Add / Finish / Cancel / Remove. */
+    /**
+     * Non-modal dialog: build a list of substrates with Add / Back / Finish / Cancel / Remove.
+     * Returns a {@link Nav}: Finish advances with the list, Back asks the wizard to step to the
+     * previous screen (the substrate list is handed back so the caller can re-seed it via
+     * {@code initial}), Cancel (or closing the window) aborts.
+     */
     static final class SubstrateDialog {
 
-        static SubstrateChoices show(Stage owner, ChannelSet channelSet) {
-            return show(owner, channelSet, false);
-        }
-
         /**
-         * @param allowEmptyFinish when true, Finish works with zero substrates (returns an empty
-         *     list, distinct from a {@code null} cancel) — the combined wizard treats substrates as
-         *     optional. When false (substrate-only wizard), Finish requires at least one.
+         * @param allowEmptyFinish when true, Finish works with zero substrates (advances with an
+         *     empty list) — the combined wizard treats substrates as optional. When false
+         *     (substrate-only wizard), Finish requires at least one.
+         * @param initial substrates to pre-populate the list with (for Back re-entry); may be empty.
          */
-        static SubstrateChoices show(Stage owner, ChannelSet channelSet, boolean allowEmptyFinish) {
+        static Nav<SubstrateChoices> show(Stage owner, ChannelSet channelSet, boolean allowEmptyFinish,
+                                          List<CommittedSubstrate> initial) {
             if (channelSet.options().isEmpty()) {
                 Dialogs.showErrorMessage(TITLE, "Image has no channels reported by its server.");
-                return null;
+                return Nav.cancel();
             }
 
-            List<CommittedSubstrate> committed = new ArrayList<>();
+            List<CommittedSubstrate> committed = new ArrayList<>(initial == null ? List.of() : initial);
             ObservableList<String> listItems = FXCollections.observableArrayList();
-            boolean[] confirmed = { false };
+            for (CommittedSubstrate cs : committed) {
+                listItems.add(cs.displayLabel());
+            }
+            var navResult = new java.util.concurrent.atomic.AtomicReference<Nav<SubstrateChoices>>(Nav.cancel());
 
             // -------- form fields --------
             TextField nameField = new TextField();
@@ -635,6 +685,7 @@ public final class BiwtAbmCommand {
 
             // -------- buttons --------
             Button addButton = new Button("Add substrate");
+            Button backButton = new Button("Back");
             Button finishButton = new Button("Finish");
             Button cancelButton = new Button("Cancel");
 
@@ -701,7 +752,7 @@ public final class BiwtAbmCommand {
             GridPane.setHgrow(exprBox, Priority.ALWAYS);
             GridPane.setVgrow(exprBox, Priority.ALWAYS);
 
-            HBox buttons = new HBox(10, addButton, finishButton, cancelButton);
+            HBox buttons = new HBox(10, addButton, backButton, finishButton, cancelButton);
             buttons.setAlignment(Pos.CENTER_RIGHT);
 
             HBox listRow = new HBox(8, removeButton);
@@ -723,7 +774,9 @@ public final class BiwtAbmCommand {
             Stage stage = new Stage();
             stage.setTitle("BIWT — define substrates");
             stage.initOwner(owner);
-            stage.initModality(Modality.WINDOW_MODAL);
+            // Non-modal: the user can pan/zoom the source image while defining substrates. The
+            // calling wizard re-validates the active image before sampling.
+            stage.initModality(Modality.NONE);
             stage.setScene(new Scene(root));
             stage.setResizable(true);
             stage.setMinWidth(440);
@@ -753,11 +806,13 @@ public final class BiwtAbmCommand {
                 nameField.clear();
                 nameField.requestFocus();
             });
-            finishButton.setOnAction(e -> { confirmed[0] = true; stage.close(); });
-            cancelButton.setOnAction(e -> { confirmed[0] = false; stage.close(); });
+            // Back hands the committed list back so the wizard can re-seed this dialog on return.
+            finishButton.setOnAction(e -> { navResult.set(Nav.next(new SubstrateChoices(committed))); stage.close(); });
+            backButton.setOnAction(e -> { navResult.set(Nav.back()); stage.close(); });
+            cancelButton.setOnAction(e -> { navResult.set(Nav.cancel()); stage.close(); });
 
             stage.showAndWait();
-            return confirmed[0] ? new SubstrateChoices(committed) : null;
+            return navResult.get();
         }
 
         /** Returns the first identifier in {@code expr} that has no extractor, or null if all resolve. */
